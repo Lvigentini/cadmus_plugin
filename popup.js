@@ -370,8 +370,8 @@ function cadmusAction(action, options) {
       mutation CreateQuestion(
         $assessmentId: ID!
         $subjectId:    ID!
-        $input:        CreateQuestionInput!
-        $childrenQuestions: [CreateQuestionInput!]!
+        $input:        QuestionAttributes!
+        $childrenQuestions: [QuestionAttributes!]!
       ) {
         createQuestion(
           assessmentId: $assessmentId
@@ -486,16 +486,31 @@ function cadmusAction(action, options) {
 
     for (let idx = 0; idx < questions.length; idx++) {
       const q = questions[idx];
-      const blankCount = (q.prompt.match(/___/g) || []).length;
-      if (blankCount !== q.blanks.length) {
-        logs.push({ msg: `Q${idx + 1}: ${blankCount} blank marker(s) vs ${q.blanks.length} answer set(s) — skipped`, cls: 'warn' });
+      let prompt = q.prompt;
+      const blankCount = (prompt.match(/___/g) || []).length;
+      const expectedBlanks = q.blanks.length;
+
+      // Handle duplicated prompts (QTI sometimes repeats the template text)
+      // If we have more ___ markers than answer sets, trim the prompt to keep
+      // only the first N blanks (the rest are duplicates)
+      if (blankCount > expectedBlanks && expectedBlanks > 0) {
+        let kept = 0;
+        prompt = prompt.replace(/___/g, (match) => {
+          kept++;
+          return kept <= expectedBlanks ? '___' : '';
+        });
+        // Clean up leftover whitespace from removed markers
+        prompt = prompt.replace(/\s{2,}/g, ' ').trim();
+        logs.push({ msg: `Q${idx + 1}: trimmed duplicate blanks (${blankCount} → ${expectedBlanks})`, cls: 'warn' });
+      } else if (blankCount < expectedBlanks) {
+        logs.push({ msg: `Q${idx + 1}: ${blankCount} blank marker(s) but ${expectedBlanks} answer set(s) — skipped`, cls: 'warn' });
         failed++;
         continue;
       }
 
       const blankUUIDs = q.blanks.map(() => uuid());
-      const shortPrompt = q.prompt.substring(0, 200);
-      const promptDoc = buildPromptDoc(q.prompt, blankUUIDs);
+      const shortPrompt = prompt.substring(0, 200);
+      const promptDoc = buildPromptDoc(prompt, blankUUIDs);
       const fields = buildFields(q.blanks, distractorPool, idx);
 
       // Use per-blank points from XML, or override with UI value
