@@ -9,6 +9,9 @@ desktop.ini
 *.swp
 *.swo
 
+# Claude Code
+.claude/
+
 # Node (if ever added)
 node_modules/
 package-lock.json
