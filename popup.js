@@ -10,15 +10,30 @@ const log = (msg, cls = '') => {
   el.scrollTop = el.scrollHeight;
 };
 
+// ── Find the Cadmus tab (works from both popup and window mode) ─────────────
+let cadmusTabId = null;
+
+async function findCadmusTab() {
+  // Try all tabs matching Cadmus host
+  const tabs = await chrome.tabs.query({ url: 'https://*.cadmus.io/*' });
+  for (const tab of tabs) {
+    const url = tab.url || '';
+    const match = url.match(/cadmus\.io\/([^/]+)\/assessment\/([^/]+)\/library/);
+    if (match) return tab;
+  }
+  return null;
+}
+
 // ── Check context on popup open ──────────────────────────────────────────────
 async function checkContext() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return setDisconnected('No active tab');
+  const tab = await findCadmusTab();
+  if (!tab) return setDisconnected('Navigate to a Cadmus Question Library');
 
   const url = tab.url || '';
   const match = url.match(/cadmus\.io\/([^/]+)\/assessment\/([^/]+)\/library/);
   if (!match) return setDisconnected('Navigate to a Cadmus Question Library');
 
+  cadmusTabId = tab.id;
   const [, tenant, assessmentId] = match;
   setConnected(tenant, assessmentId);
 }
@@ -42,7 +57,10 @@ function setDisconnected(msg) {
 
 // ── Run action in page context ───────────────────────────────────────────────
 async function runAction(action, options) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!cadmusTabId) {
+    log('No Cadmus tab found — refresh and try again', 'err');
+    return;
+  }
 
   // Disable all buttons while running
   document.querySelectorAll('.btn').forEach(b => b.disabled = true);
@@ -50,7 +68,7 @@ async function runAction(action, options) {
 
   try {
     const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: cadmusTabId },
       world: 'MAIN',
       func: cadmusAction,
       args: [action, options],
