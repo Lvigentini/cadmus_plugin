@@ -2,8 +2,8 @@
 
 // Open popup.html as a centered window instead of the tiny dropdown
 chrome.action.onClicked.addListener(async () => {
-  const WIDTH = 520;
-  const HEIGHT = 640;
+  const WIDTH = 620;
+  const HEIGHT = 760;
 
   // Get current window to center relative to it
   const current = await chrome.windows.getCurrent();

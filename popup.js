@@ -41,7 +41,7 @@ async function checkContext() {
 function setConnected(tenant, assessmentId) {
   const status = $('#status');
   status.className = 'status status--connected';
-  $('#status-text').textContent = `Library: ${tenant}`;
+  $('#status-text').textContent = `Connected — ${tenant} / ${assessmentId.substring(0, 8)}…`;
   $('#actions').classList.remove('disabled');
   // store for later use
   document.body.dataset.tenant = tenant;

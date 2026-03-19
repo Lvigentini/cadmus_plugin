@@ -19,7 +19,7 @@
     </button>
     <button class="tab" data-tab="edit">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-      Edit
+      Bulk Edit
     </button>
     <button class="tab" data-tab="delete">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
@@ -32,6 +32,7 @@
 
     <!-- ═══ IMPORT TAB ═══ -->
     <div class="tab-panel active" data-panel="import">
+      <div class="tab-help">Upload an Excel or QTI XML file to create new questions. Files can contain mixed question types — each type is detected automatically and shown below with a count badge.</div>
 
       <!-- Shared file input -->
       <div class="file-input-area">
@@ -98,7 +99,7 @@
 
     <!-- ═══ EDIT TAB ═══ -->
     <div class="tab-panel" data-panel="edit">
-      <p class="tab-hint">Select questions in the library, then edit in bulk.</p>
+      <div class="tab-help">Select questions using the checkboxes in the Cadmus library table, then set options and click Run. Only questions matching the type are affected — others are skipped.</div>
 
       <details class="card" open>
         <summary>
@@ -139,6 +140,7 @@
 
     <!-- ═══ DELETE TAB ═══ -->
     <div class="tab-panel" data-panel="delete">
+      <div class="tab-help">Remove questions from the library by selecting them in the Cadmus table and clicking Delete below. This uses the archive mutation and is permanent from the UI.</div>
       <div class="card card--danger">
         <div class="card-body" style="padding-top:14px">
           <p class="warning">
