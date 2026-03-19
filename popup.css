@@ -60,10 +60,10 @@ body {
 
 /* ── Tab help box ── */
 .tab-help {
-  font-size: 12px;
+  font-size: 13px;
   color: #666;
   line-height: 1.5;
-  padding: 10px 12px;
+  padding: 10px 14px;
   background: #f0f4ff;
   border: 1px solid #d0daf0;
   border-radius: 8px;
@@ -186,6 +186,57 @@ label input[type="number"] {
 .checkbox-label {
   justify-content: flex-start;
   gap: 8px;
+}
+
+.label-hint {
+  font-size: 11px;
+  color: #999;
+  font-weight: 400;
+}
+
+/* ── Toggle switch ── */
+.toggle-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  color: #555;
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 8px;
+  border: 1px solid #ccc;
+  border-radius: 20px;
+  background: #eee;
+  font-size: 12px;
+  font-weight: 600;
+  color: #999;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+.toggle::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #bbb;
+  transition: all 0.2s;
+}
+.toggle.active {
+  background: #e8f5e9;
+  border-color: #66bb6a;
+  color: #2e7d32;
+}
+.toggle.active::before {
+  background: #43a047;
+}
+.toggle .toggle-label-text {
+  min-width: 20px;
+  text-align: center;
 }
 
 /* ── Buttons ── */

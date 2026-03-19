@@ -32,7 +32,7 @@
 
     <!-- ═══ IMPORT TAB ═══ -->
     <div class="tab-panel active" data-panel="import">
-      <div class="tab-help">Upload an Excel or QTI XML file to create new questions. Files can contain mixed question types — each type is detected automatically and shown below with a count badge.</div>
+      <div class="tab-help">Upload an Excel or QTI XML file to create new questions. Files can contain mixed question types — each type is detected automatically. Expand a section below to set options and import.</div>
 
       <!-- Shared file input -->
       <div class="file-input-area">
@@ -52,7 +52,12 @@
         </summary>
         <div class="card-body">
           <label>Points per blank <input type="number" id="fib-points" value="1" min="0" step="0.5"></label>
-          <label class="checkbox-label"><input type="checkbox" id="fib-shuffle"> Shuffle choices</label>
+          <label class="toggle-label">
+            <span>Shuffle choices</span>
+            <button type="button" class="toggle" id="fib-shuffle" aria-pressed="false">
+              <span class="toggle-label-text">Off</span>
+            </button>
+          </label>
           <button class="btn btn--import" data-action="importFIB" disabled>Import</button>
         </div>
       </details>
@@ -65,7 +70,12 @@
         </summary>
         <div class="card-body">
           <label>Points <input type="number" id="mcq-import-points" value="1" min="0" step="0.5"></label>
-          <label class="checkbox-label"><input type="checkbox" id="mcq-import-shuffle" checked> Shuffle choices</label>
+          <label class="toggle-label">
+            <span>Shuffle choices</span>
+            <button type="button" class="toggle active" id="mcq-import-shuffle" aria-pressed="true">
+              <span class="toggle-label-text">On</span>
+            </button>
+          </label>
           <button class="btn btn--import" data-action="importMCQ" disabled>Import</button>
         </div>
       </details>
@@ -78,7 +88,12 @@
         </summary>
         <div class="card-body">
           <label>Points per pair <input type="number" id="match-import-points" value="1" min="0" step="0.5"></label>
-          <label class="checkbox-label"><input type="checkbox" id="match-import-shuffle" checked> Shuffle pairs</label>
+          <label class="toggle-label">
+            <span>Shuffle pairs</span>
+            <button type="button" class="toggle active" id="match-import-shuffle" aria-pressed="true">
+              <span class="toggle-label-text">On</span>
+            </button>
+          </label>
           <button class="btn btn--import" data-action="importMatching" disabled>Import</button>
         </div>
       </details>
@@ -91,7 +106,7 @@
         </summary>
         <div class="card-body">
           <label>Points <input type="number" id="short-import-points" value="1" min="0" step="0.5"></label>
-          <label>Similarity % <input type="number" id="short-import-similarity" value="60" min="0" max="100"></label>
+          <label>Similarity % <span class="label-hint">(auto-marking)</span> <input type="number" id="short-import-similarity" value="60" min="0" max="100"></label>
           <button class="btn btn--import" data-action="importShort" disabled>Import</button>
         </div>
       </details>
@@ -99,7 +114,7 @@
 
     <!-- ═══ EDIT TAB ═══ -->
     <div class="tab-panel" data-panel="edit">
-      <div class="tab-help">Select questions using the checkboxes in the Cadmus library table, then set options and click Run. Only questions matching the type are affected — others are skipped.</div>
+      <div class="tab-help">Select questions using the checkboxes in the Cadmus library table, then expand a section below to set options and click Run. Only questions matching the selected type are affected.</div>
 
       <details class="card" open>
         <summary>
@@ -108,7 +123,12 @@
         </summary>
         <div class="card-body">
           <label>Points <input type="number" id="mcq-points" value="1" min="0" step="0.5"></label>
-          <label class="checkbox-label"><input type="checkbox" id="mcq-shuffle" checked> Shuffle choices</label>
+          <label class="toggle-label">
+            <span>Shuffle choices</span>
+            <button type="button" class="toggle active" id="mcq-shuffle" aria-pressed="true">
+              <span class="toggle-label-text">On</span>
+            </button>
+          </label>
           <button class="btn" data-action="editMCQ">Run</button>
         </div>
       </details>
@@ -120,7 +140,12 @@
         </summary>
         <div class="card-body">
           <label>Points <input type="number" id="match-points" value="3" min="0" step="0.5"></label>
-          <label class="checkbox-label"><input type="checkbox" id="match-shuffle" checked> Shuffle pairs</label>
+          <label class="toggle-label">
+            <span>Shuffle pairs</span>
+            <button type="button" class="toggle active" id="match-shuffle" aria-pressed="true">
+              <span class="toggle-label-text">On</span>
+            </button>
+          </label>
           <button class="btn" data-action="editMatching">Run</button>
         </div>
       </details>
@@ -132,7 +157,7 @@
         </summary>
         <div class="card-body">
           <label>Points <input type="number" id="short-points" value="2" min="0" step="0.5"></label>
-          <label>Similarity % <input type="number" id="short-similarity" value="60" min="0" max="100"></label>
+          <label>Similarity % <span class="label-hint">(auto-marking)</span> <input type="number" id="short-similarity" value="60" min="0" max="100"></label>
           <button class="btn" data-action="editShort">Run</button>
         </div>
       </details>

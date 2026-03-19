@@ -1379,6 +1379,18 @@ document.addEventListener('toggle', (e) => {
   }
 }, true);
 
+// ── Toggle switch behaviour ──────────────────────────────────────────────────
+document.addEventListener('click', (e) => {
+  const toggle = e.target.closest('.toggle');
+  if (!toggle) return;
+  const isActive = toggle.classList.toggle('active');
+  toggle.setAttribute('aria-pressed', isActive);
+  toggle.querySelector('.toggle-label-text').textContent = isActive ? 'On' : 'Off';
+});
+
+// Helper: read toggle state
+const isToggleOn = (id) => document.getElementById(id)?.classList.contains('active') ?? false;
+
 // ── Wire up buttons ──────────────────────────────────────────────────────────
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-action]');
@@ -1389,10 +1401,10 @@ document.addEventListener('click', (e) => {
 
   switch (action) {
     case 'editMCQ':
-      options = { points: parseFloat($('#mcq-points').value), shuffle: $('#mcq-shuffle').checked };
+      options = { points: parseFloat($('#mcq-points').value), shuffle: isToggleOn('mcq-shuffle') };
       break;
     case 'editMatching':
-      options = { points: parseFloat($('#match-points').value), shuffle: $('#match-shuffle').checked };
+      options = { points: parseFloat($('#match-points').value), shuffle: isToggleOn('match-shuffle') };
       break;
     case 'editShort':
       options = { points: parseFloat($('#short-points').value), similarity: parseInt($('#short-similarity').value, 10) };
@@ -1405,7 +1417,7 @@ document.addEventListener('click', (e) => {
       options = {
         questions: parsedByType.fib,
         points: parseFloat($('#fib-points').value),
-        shuffle: $('#fib-shuffle').checked,
+        shuffle: isToggleOn('fib-shuffle'),
       };
       break;
     case 'importMCQ':
@@ -1413,7 +1425,7 @@ document.addEventListener('click', (e) => {
       options = {
         questions: parsedByType.mcq,
         points: parseFloat($('#mcq-import-points').value),
-        shuffle: $('#mcq-import-shuffle').checked,
+        shuffle: isToggleOn('mcq-import-shuffle'),
       };
       break;
     case 'importMatching':
@@ -1421,7 +1433,7 @@ document.addEventListener('click', (e) => {
       options = {
         questions: parsedByType.matching,
         points: parseFloat($('#match-import-points').value),
-        shuffle: $('#match-import-shuffle').checked,
+        shuffle: isToggleOn('match-import-shuffle'),
       };
       break;
     case 'importShort':
