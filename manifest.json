@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Cadmus Question Library Tools",
+  "version": "1.1.0",
+  "description": "Bulk edit, import, and manage questions in Cadmus question libraries",
+  "author": "Lorenzo Vigentini <lorenzo@cogentixai.com>",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["https://*.cadmus.io/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
