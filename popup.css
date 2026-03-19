@@ -26,9 +26,86 @@ body {
 .status--connected .status-icon::before { background: #43a047; }
 .status--disconnected .status-icon::before { background: #ef6c00; }
 
+/* ── Tab bar ── */
+.tab-bar {
+  display: flex;
+  background: #fff;
+  border-bottom: 2px solid #e0e0e0;
+  padding: 0 12px;
+  gap: 0;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: #888;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab:hover { color: #555; }
+.tab.active { color: #1a73e8; border-bottom-color: #1a73e8; }
+.tab svg { opacity: 0.7; }
+.tab.active svg { opacity: 1; }
+
+/* ── Tab panels ── */
+.tab-panel { display: none; }
+.tab-panel.active { display: flex; flex-direction: column; gap: 8px; }
+
+.tab-hint {
+  font-size: 12px;
+  color: #888;
+  padding: 2px 4px 4px;
+  font-style: italic;
+}
+
 /* ── Actions container ── */
-.actions { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+.actions { padding: 12px 16px; }
 .actions.disabled { opacity: 0.5; pointer-events: none; }
+
+/* ── File input area ── */
+.file-input-area {
+  background: #fff;
+  border: 2px dashed #ce93d8;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 4px;
+}
+.file-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #555;
+  cursor: pointer;
+}
+.file-label input[type="file"] {
+  display: none;
+}
+.file-label span {
+  flex: 1;
+}
+.file-label:hover { color: #7b1fa2; }
+
+.file-summary {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #555;
+  line-height: 1.5;
+}
+.file-summary:empty { display: none; }
+.file-summary .type-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.file-summary .type-line .count { font-weight: 600; color: #7b1fa2; }
 
 /* ── Cards ── */
 .card {
@@ -38,20 +115,18 @@ body {
   overflow: hidden;
 }
 .card summary {
-  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 13px;
   cursor: pointer;
   user-select: none;
   list-style: none;
 }
-.card summary::before {
-  content: "▸ ";
-  font-size: 12px;
-}
-.card[open] summary::before {
-  content: "▾ ";
-}
+.card summary svg { flex-shrink: 0; opacity: 0.6; }
+.card summary::-webkit-details-marker { display: none; }
 .card-body {
   padding: 10px 16px 14px;
   display: flex;
@@ -59,8 +134,33 @@ body {
   gap: 10px;
   border-top: 1px solid #f0f0f0;
 }
+
+/* Import card */
+.card--import { border-color: #e1bee7; }
+.card--import summary { color: #7b1fa2; }
+.card--import.card--empty { opacity: 0.4; pointer-events: none; }
+.card--import.card--empty summary { color: #aaa; }
+
+/* Danger card */
 .card--danger { border-color: #ffcdd2; }
 .card--danger summary { color: #c62828; }
+
+/* ── Badge ── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #e1bee7;
+  color: #7b1fa2;
+  margin-left: auto;
+}
+.card--empty .badge { background: #eee; color: #aaa; }
 
 /* ── Form elements ── */
 label {
@@ -85,6 +185,9 @@ label input[type="number"] {
 
 /* ── Buttons ── */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 9px 18px;
   border: none;
   border-radius: 8px;
@@ -103,50 +206,10 @@ label input[type="number"] {
 .btn--import { background: #7b1fa2; }
 .btn--import:hover { background: #6a1b9a; }
 
-/* ── Import card ── */
-.card--import { border-color: #ce93d8; }
-.card--import summary { color: #7b1fa2; }
-
-.file-label {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-}
-.file-label input[type="file"] {
-  font-size: 11px;
-  color: #555;
-}
-.file-label input[type="file"]::file-selector-button {
-  padding: 4px 10px;
-  border: 1px solid #ce93d8;
-  border-radius: 4px;
-  background: #f3e5f5;
-  color: #7b1fa2;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  margin-right: 8px;
-}
-
-.file-preview {
-  font-size: 11px;
-  color: #555;
-  line-height: 1.4;
-  max-height: 100px;
-  overflow-y: auto;
-  padding: 6px 8px;
-  background: #fafafa;
-  border: 1px solid #eee;
-  border-radius: 4px;
-}
-.file-preview:empty { display: none; }
-.file-preview .q-count { font-weight: 600; color: #7b1fa2; }
-.file-preview .q-item { color: #777; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
 .warning {
-  font-size: 11px;
+  font-size: 12px;
   color: #c62828;
-  line-height: 1.4;
+  line-height: 1.6;
 }
 
 /* ── Log ── */
