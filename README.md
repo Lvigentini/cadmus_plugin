@@ -2,19 +2,25 @@
 
 A Chrome extension that provides a UI for bulk editing, importing, and managing questions in [Cadmus](https://cadmus.io) question libraries — replacing the need to run console scripts manually.
 
+## Screenshots
+
+| Import Tab | Bulk Edit Tab |
+|:---:|:---:|
+| ![Import tab with a file loaded](docs/screenshot-import-tab.png) | ![Bulk Edit tab with log output](docs/screenshot-bulk-edit-tab.png) |
+
 ## Features
+
+### Import Questions
+- **Fill-in-Blank, MCQ, Matching, Short Answer** — all four question types supported
+- **From Excel (.xlsx)** — Reads the standard question bank format; mixed types detected automatically
+- **From QTI XML (.xml)** — Reads Blackboard QTI 1.2 XML exports
+- Type-specific options (points, shuffle, similarity) per accordion card
+- Cross-pollinates distractors for fill-in-blank questions
 
 ### Bulk Edit (selected questions)
 - **MCQ** — Set points and shuffle choices across all selected multiple-choice questions
 - **Matching** — Set points and shuffle pairs across all selected matching questions
-- **Short Answer** — Set points and similarity threshold across all selected short-answer questions
-
-### Import Fill-in-Blank
-- **From Excel (.xlsx)** — Reads the standard question bank format (same columns used by `cadmus_qti_generator.py`)
-- **From QTI XML (.xml)** — Reads Blackboard QTI 1.2 XML files
-- Auto-splits answers across blanks using ceiling division
-- Cross-pollinates distractors from other questions in the same file
-- Configurable points-per-blank and shuffle options
+- **Short Answer** — Set points and similarity threshold (auto-marking) across all selected short-answer questions
 
 ### Delete
 - Archive selected questions in bulk (irreversible from the Cadmus UI)
@@ -77,6 +83,7 @@ After making changes to the source files:
 
 ```
 ├── manifest.json          # Chrome extension manifest (v3)
+├── background.js          # Service worker — opens popup as centred window
 ├── popup.html             # Extension popup UI
 ├── popup.css              # Popup styles
 ├── popup.js               # Main logic: parsers, UI wiring, injected actions
@@ -86,7 +93,9 @@ After making changes to the source files:
 │   ├── icon16.png         # Toolbar icon
 │   ├── icon48.png         # Extensions page icon
 │   └── icon128.png        # Web Store / install dialog icon
-└── cadmus_question_library_*.js   # Original console scripts (reference)
+└── docs/
+    ├── screenshot-import-tab.png
+    └── screenshot-bulk-edit-tab.png
 ```
 
 ## Technical Notes
