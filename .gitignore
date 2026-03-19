@@ -12,6 +12,12 @@ desktop.ini
 # Claude Code
 .claude/
 
+# Distribution
+*.zip
+
+# Internal docs
+PUBLISHING.md
+
 # Node (if ever added)
 node_modules/
 package-lock.json
