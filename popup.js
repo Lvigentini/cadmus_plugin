@@ -202,7 +202,7 @@ function cadmusAction(action, options) {
 
   // --- Mutations ---
   const ATTRS_MUT = `mutation UpdateQuestionAttributes($questionIds: [ID!]!, $input: QuestionAttributesInput!) {
-    updateQuestionAttributes(questionIds: $questionIds, input: $input) { id points }
+    updateQuestionAttributes(questionIds: $questionIds, input: $input) { id points difficulty }
   }`;
 
   const FETCH_Q = `query GetQ($questionId: ID!) {
@@ -229,6 +229,26 @@ function cadmusAction(action, options) {
   const ARCHIVE_Q = `mutation ArchiveQuestion($questionId: ID!) {
     archiveQuestion(questionId: $questionId) { id __typename }
   }`;
+
+  const APPEND_TAGS = `mutation AppendTagsForQuestions($questionIds: [ID!]!, $input: [TagInput!]!) {
+    appendTagsForQuestions(questionIds: $questionIds, input: $input) { id }
+  }`;
+
+  async function tagQuestions(questionIds, tagName, hdrs) {
+    if (!questionIds.length || !tagName) return null;
+    return gql(APPEND_TAGS, {
+      questionIds,
+      input: [{ categoryId: "1", name: tagName }],
+    }, hdrs);
+  }
+
+  async function setDifficulty(questionIds, difficulty, hdrs) {
+    if (!questionIds.length || !difficulty) return null;
+    return gql(ATTRS_MUT, {
+      questionIds,
+      input: { difficulty },
+    }, hdrs);
+  }
 
   const CREATE_Q = `
     mutation CreateQuestion(
@@ -501,6 +521,7 @@ function cadmusAction(action, options) {
 
     const logs = [];
     let created = 0, failed = 0;
+    const createdIds = [];  // { id, bloom }
     const questions = opts.questions;
 
     // ── Build distractor pool from all questions ──
@@ -535,7 +556,7 @@ function cadmusAction(action, options) {
         prompt = prompt.replace(/\s{2,}/g, ' ').trim();
         logs.push({ msg: `Q${idx + 1}: trimmed duplicate blanks (${blankCount} → ${expectedBlanks})`, cls: 'warn' });
       } else if (blankCount < expectedBlanks) {
-        logs.push({ msg: `Q${idx + 1}: ${blankCount} blank marker(s) but ${expectedBlanks} answer set(s) — skipped`, cls: 'warn' });
+        logs.push({ msg: `Q${idx + 1}: found ${blankCount} ___ marker(s) in prompt but ${expectedBlanks} answer group(s) — add ___N___ placeholders to the question text or reduce answer groups`, cls: 'warn' });
         failed++;
         continue;
       }
@@ -572,9 +593,47 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
+        if (cq?.id) createdIds.push({ id: cq.id, bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Q${idx + 1} created — #${cq?.libraryId} (${q.blanks.length} blank(s), ${totalPoints} pts)`, cls: 'ok' });
         created++;
       }
+    }
+
+    // Tag with filename
+    if (createdIds.length && opts.tag) {
+      const allIds = createdIds.map(c => c.id);
+      const tagRes = await tagQuestions(allIds, opts.tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${allIds.length} question(s) with "${opts.tag}"`, cls: 'ok' });
+    }
+
+    // Tag with bloom level
+    const bloomGroups = {};
+    for (const c of createdIds) {
+      if (c.bloom) {
+        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
+        if (!bloomGroups[key]) bloomGroups[key] = [];
+        bloomGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(bloomGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} question(s) with "${tag}"`, cls: 'ok' });
+    }
+
+    // Set difficulty
+    const diffGroups = {};
+    for (const c of createdIds) {
+      if (c.difficulty) {
+        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
+        diffGroups[c.difficulty].push(c.id);
+      }
+    }
+    for (const [diff, ids] of Object.entries(diffGroups)) {
+      const res = await setDifficulty(ids, diff, hdrs);
+      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Set ${ids.length} question(s) to ${diff}`, cls: 'ok' });
     }
 
     // Refresh library
@@ -599,6 +658,7 @@ function cadmusAction(action, options) {
 
     const logs = [];
     let created = 0, failed = 0;
+    const createdIds = [];
     const questions = opts.questions;
 
     for (let idx = 0; idx < questions.length; idx++) {
@@ -659,9 +719,46 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
+        if (cq?.id) createdIds.push({ id: cq.id, bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `MCQ Q${idx + 1} created — #${cq?.libraryId} (${q.choices.length} choices, ${q.points || opts.points} pts)`, cls: 'ok' });
         created++;
       }
+    }
+
+    if (createdIds.length && opts.tag) {
+      const allIds = createdIds.map(c => c.id);
+      const tagRes = await tagQuestions(allIds, opts.tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${allIds.length} MCQ(s) with "${opts.tag}"`, cls: 'ok' });
+    }
+
+    // Tag with bloom level
+    const bloomGroups = {};
+    for (const c of createdIds) {
+      if (c.bloom) {
+        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
+        if (!bloomGroups[key]) bloomGroups[key] = [];
+        bloomGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(bloomGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} MCQ(s) with "${tag}"`, cls: 'ok' });
+    }
+
+    // Set difficulty
+    const diffGroups = {};
+    for (const c of createdIds) {
+      if (c.difficulty) {
+        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
+        diffGroups[c.difficulty].push(c.id);
+      }
+    }
+    for (const [diff, ids] of Object.entries(diffGroups)) {
+      const res = await setDifficulty(ids, diff, hdrs);
+      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Set ${ids.length} MCQ(s) to ${diff}`, cls: 'ok' });
     }
 
     if (created > 0) await refreshLibrary();
@@ -684,6 +781,7 @@ function cadmusAction(action, options) {
 
     const logs = [];
     let created = 0, failed = 0;
+    const createdIds = [];
     const questions = opts.questions;
 
     for (let idx = 0; idx < questions.length; idx++) {
@@ -747,9 +845,46 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
+        if (cq?.id) createdIds.push({ id: cq.id, bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Matching Q${idx + 1} created — #${cq?.libraryId} (${q.pairs.length} pairs, ${totalPoints} pts)`, cls: 'ok' });
         created++;
       }
+    }
+
+    if (createdIds.length && opts.tag) {
+      const allIds = createdIds.map(c => c.id);
+      const tagRes = await tagQuestions(allIds, opts.tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${allIds.length} Matching question(s) with "${opts.tag}"`, cls: 'ok' });
+    }
+
+    // Tag with bloom level
+    const bloomGroups = {};
+    for (const c of createdIds) {
+      if (c.bloom) {
+        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
+        if (!bloomGroups[key]) bloomGroups[key] = [];
+        bloomGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(bloomGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} Matching question(s) with "${tag}"`, cls: 'ok' });
+    }
+
+    // Set difficulty
+    const diffGroups = {};
+    for (const c of createdIds) {
+      if (c.difficulty) {
+        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
+        diffGroups[c.difficulty].push(c.id);
+      }
+    }
+    for (const [diff, ids] of Object.entries(diffGroups)) {
+      const res = await setDifficulty(ids, diff, hdrs);
+      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Set ${ids.length} Matching question(s) to ${diff}`, cls: 'ok' });
     }
 
     if (created > 0) await refreshLibrary();
@@ -772,6 +907,7 @@ function cadmusAction(action, options) {
 
     const logs = [];
     let created = 0, failed = 0;
+    const createdIds = [];
     const questions = opts.questions;
     const similarityFloat = (opts.similarity || 60) / 100;
 
@@ -824,9 +960,46 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
+        if (cq?.id) createdIds.push({ id: cq.id, bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Short Q${idx + 1} created — #${cq?.libraryId} (${correctValues.length} answer(s), ${q.points || opts.points} pts)`, cls: 'ok' });
         created++;
       }
+    }
+
+    if (createdIds.length && opts.tag) {
+      const allIds = createdIds.map(c => c.id);
+      const tagRes = await tagQuestions(allIds, opts.tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${allIds.length} Short question(s) with "${opts.tag}"`, cls: 'ok' });
+    }
+
+    // Tag with bloom level
+    const bloomGroups = {};
+    for (const c of createdIds) {
+      if (c.bloom) {
+        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
+        if (!bloomGroups[key]) bloomGroups[key] = [];
+        bloomGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(bloomGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} Short question(s) with "${tag}"`, cls: 'ok' });
+    }
+
+    // Set difficulty
+    const diffGroups = {};
+    for (const c of createdIds) {
+      if (c.difficulty) {
+        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
+        diffGroups[c.difficulty].push(c.id);
+      }
+    }
+    for (const [diff, ids] of Object.entries(diffGroups)) {
+      const res = await setDifficulty(ids, diff, hdrs);
+      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Set ${ids.length} Short question(s) to ${diff}`, cls: 'ok' });
     }
 
     if (created > 0) await refreshLibrary();
@@ -857,6 +1030,7 @@ const HEADER_MAP = {
 };
 
 let parsedByType = { fib: [], mcq: [], matching: [], short: [] };
+let importFileName = '';
 
 // ── Type normalisation (mirrors cadmus_qti_generator.py normalise_type) ──────
 function normaliseType(raw) {
@@ -866,6 +1040,15 @@ function normaliseType(raw) {
   if (t === 'matching') return 'matching';
   if (t === 'short answer' || t === 'short response' || t === 'essay' || t === 'extended response') return 'short';
   return null;
+}
+
+// ── Difficulty normaliser → EASY | MEDIUM | HARD or '' ───────────────────────
+function normaliseDifficulty(raw) {
+  const d = (raw || '').toLowerCase().trim();
+  if (d === 'easy' || d === '1' || d === 'low') return 'EASY';
+  if (d === 'medium' || d === '2' || d === 'moderate' || d === 'med') return 'MEDIUM';
+  if (d === 'hard' || d === '3' || d === 'high' || d === 'difficult') return 'HARD';
+  return '';
 }
 
 // ── FIB helper: ceiling-division answer splitting ────────────────────────────
@@ -928,6 +1111,11 @@ function parseExcelAll(arrayBuffer) {
         .replace(/\s+/g, ' ')
         .trim();
 
+      // If no blank markers exist, append one (single-blank FIB)
+      if (!(prompt.includes('___'))) {
+        prompt += ' ___';
+      }
+
       // Deduplicate repeated prompts
       const half = Math.floor(prompt.length / 2);
       const first = prompt.substring(0, half).trim();
@@ -944,6 +1132,8 @@ function parseExcelAll(arrayBuffer) {
         feedback: explanation || '',
         tags: get('topic') || '',
         source: get('source') || '',
+        bloom: get('bloom') || '',
+        difficulty: normaliseDifficulty(get('diff')),
       });
 
     } else if (qType === 'mcq') {
@@ -961,6 +1151,8 @@ function parseExcelAll(arrayBuffer) {
         choices,
         points: 1,
         feedback: explanation || '',
+        bloom: get('bloom') || '',
+        difficulty: normaliseDifficulty(get('diff')),
       });
 
     } else if (qType === 'matching') {
@@ -984,6 +1176,8 @@ function parseExcelAll(arrayBuffer) {
           pairs,
           points: 1,
           feedback: explanation || '',
+          bloom: get('bloom') || '',
+          difficulty: normaliseDifficulty(get('diff')),
         });
       }
 
@@ -995,6 +1189,8 @@ function parseExcelAll(arrayBuffer) {
         answers: answers.length > 0 ? answers : [explanation || ''],
         points: 1,
         feedback: explanation || '',
+        bloom: get('bloom') || '',
+        difficulty: normaliseDifficulty(get('diff')),
       });
     }
   }
@@ -1287,9 +1483,7 @@ function updateImportUI() {
       }
     }
 
-    // Enable/disable import buttons
-    const btn = card?.querySelector('[data-action]');
-    if (btn) btn.disabled = count === 0;
+    // No per-type import buttons anymore
   }
 
   // Update file summary
@@ -1303,12 +1497,10 @@ function updateImportUI() {
     summary.textContent = parts.length ? parts.join(' \u00b7 ') : '';
   }
 
-  // Auto-open first non-empty card
-  const firstNonEmpty = types.find(t => parsedByType[t].length > 0);
-  if (firstNonEmpty) {
-    const card = $(`#card-${firstNonEmpty}`);
-    if (card && !card.hasAttribute('open')) card.setAttribute('open', '');
-  }
+  // Enable/disable the single Import All button
+  const total = types.reduce((s, t) => s + parsedByType[t].length, 0);
+  const importAllBtn = $('#btn-import-all');
+  if (importAllBtn) importAllBtn.disabled = total === 0;
 }
 
 // ── Tab switching ────────────────────────────────────────────────────────────
@@ -1324,10 +1516,13 @@ document.getElementById('import-file')?.addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) {
     parsedByType = { fib: [], mcq: [], matching: [], short: [] };
+    importFileName = '';
     updateImportUI();
     return;
   }
 
+  // Store filename without extension for tagging
+  importFileName = file.name.replace(/\.[^.]+$/, '');
   const ext = file.name.split('.').pop().toLowerCase();
 
   if (ext === 'xml') {
@@ -1412,38 +1607,43 @@ document.addEventListener('click', (e) => {
     case 'deleteSelected':
       if (!confirm('Delete all selected questions? This cannot be undone.')) return;
       break;
-    case 'importFIB':
-      if (!parsedByType.fib.length) { log('No FIB questions loaded', 'err'); return; }
-      options = {
-        questions: parsedByType.fib,
-        points: parseFloat($('#fib-points').value),
-        shuffle: isToggleOn('fib-shuffle'),
-      };
-      break;
-    case 'importMCQ':
-      if (!parsedByType.mcq.length) { log('No MCQ questions loaded', 'err'); return; }
-      options = {
-        questions: parsedByType.mcq,
-        points: parseFloat($('#mcq-import-points').value),
-        shuffle: isToggleOn('mcq-import-shuffle'),
-      };
-      break;
-    case 'importMatching':
-      if (!parsedByType.matching.length) { log('No Matching questions loaded', 'err'); return; }
-      options = {
-        questions: parsedByType.matching,
-        points: parseFloat($('#match-import-points').value),
-        shuffle: isToggleOn('match-import-shuffle'),
-      };
-      break;
-    case 'importShort':
-      if (!parsedByType.short.length) { log('No Short Answer questions loaded', 'err'); return; }
-      options = {
-        questions: parsedByType.short,
-        points: parseFloat($('#short-import-points').value),
-        similarity: parseInt($('#short-import-similarity').value, 10),
-      };
-      break;
+    case 'importAll':
+      // Run all non-empty types sequentially
+      (async () => {
+        document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        const tag = importFileName || '';
+        const jobs = [];
+        if (parsedByType.fib.length) jobs.push(['importFIB', {
+          questions: parsedByType.fib,
+          points: parseFloat($('#fib-points').value),
+          shuffle: isToggleOn('fib-shuffle'),
+          tag,
+        }]);
+        if (parsedByType.mcq.length) jobs.push(['importMCQ', {
+          questions: parsedByType.mcq,
+          points: parseFloat($('#mcq-import-points').value),
+          shuffle: isToggleOn('mcq-import-shuffle'),
+          tag,
+        }]);
+        if (parsedByType.matching.length) jobs.push(['importMatching', {
+          questions: parsedByType.matching,
+          points: parseFloat($('#match-import-points').value),
+          shuffle: isToggleOn('match-import-shuffle'),
+          tag,
+        }]);
+        if (parsedByType.short.length) jobs.push(['importShort', {
+          questions: parsedByType.short,
+          points: parseFloat($('#short-import-points').value),
+          similarity: parseInt($('#short-import-similarity').value, 10),
+          tag,
+        }]);
+        for (const [act, opts] of jobs) {
+          await runAction(act, opts);
+        }
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+        updateImportUI();
+      })();
+      return; // skip the runAction below
   }
 
   runAction(action, options);

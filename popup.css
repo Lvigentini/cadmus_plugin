@@ -261,6 +261,14 @@ label input[type="number"] {
 .btn--danger:hover { background: #b71c1c; }
 .btn--import { background: #7b1fa2; }
 .btn--import:hover { background: #6a1b9a; }
+.btn--import-all {
+  width: 100%;
+  justify-content: center;
+  margin-top: 8px;
+  padding: 12px 20px;
+  font-size: 15px;
+}
+.btn--import-all:disabled { display: none; }
 
 .warning {
   font-size: 12px;

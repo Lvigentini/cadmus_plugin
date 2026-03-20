@@ -15,6 +15,9 @@ desktop.ini
 # Distribution
 *.zip
 
+# Scripts (underscore prefix breaks Chrome extension loading)
+_*.ps1
+
 # Internal docs
 PUBLISHING.md
 
