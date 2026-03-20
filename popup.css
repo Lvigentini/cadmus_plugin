@@ -160,6 +160,48 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* ── Tag column multi-select ── */
+.mapping-tag-section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e1bee7;
+}
+.mapping-tag-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 6px;
+}
+.mapping-tag-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.mapping-tag-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #555;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.mapping-tag-item:hover { background: #f3e5f5; }
+.mapping-tag-item input[type="checkbox"] {
+  accent-color: #7b1fa2;
+  margin: 0;
+}
+.mapping-tag-sample {
+  font-size: 10px;
+  color: #aaa;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .btn--mapping-apply {
   width: 100%;
   justify-content: center;

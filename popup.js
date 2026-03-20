@@ -250,6 +250,56 @@ function cadmusAction(action, options) {
     }, hdrs);
   }
 
+  // ── Shared post-import: tags (from columns), bloom tags, difficulty ─────────
+  async function applyPostImportMeta(createdIds, hdrs, logs, typeLabel) {
+    if (!createdIds.length) return;
+
+    // 1. Column-based tags — each item has tags: ['val1', 'val2', ...]
+    const tagGroups = {};
+    for (const c of createdIds) {
+      for (const t of (c.tags || [])) {
+        const key = t.trim();
+        if (!key) continue;
+        if (!tagGroups[key]) tagGroups[key] = [];
+        tagGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(tagGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Tag "${tag}" failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} ${typeLabel}(s) with "${tag}"`, cls: 'ok' });
+    }
+
+    // 2. Bloom-level tags
+    const bloomGroups = {};
+    for (const c of createdIds) {
+      if (c.bloom) {
+        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
+        if (!bloomGroups[key]) bloomGroups[key] = [];
+        bloomGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(bloomGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} ${typeLabel}(s) with "${tag}"`, cls: 'ok' });
+    }
+
+    // 3. Difficulty
+    const diffGroups = {};
+    for (const c of createdIds) {
+      if (c.difficulty) {
+        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
+        diffGroups[c.difficulty].push(c.id);
+      }
+    }
+    for (const [diff, ids] of Object.entries(diffGroups)) {
+      const res = await setDifficulty(ids, diff, hdrs);
+      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Set ${ids.length} ${typeLabel}(s) to ${diff}`, cls: 'ok' });
+    }
+  }
+
   const CREATE_Q = `
     mutation CreateQuestion(
       $assessmentId: ID!
@@ -593,7 +643,7 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
-        if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
+        if (cq?.id) createdIds.push({ id: cq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Q${idx + 1} created — #${cq?.libraryId} (${q.blanks.length} blank(s), ${totalPoints} pts)`, cls: 'ok' });
         created++;
       }
@@ -607,49 +657,8 @@ function cadmusAction(action, options) {
       else logs.push({ msg: `Tagged ${allIds.length} question(s) with "${opts.tag}"`, cls: 'ok' });
     }
 
-    // Tag with topic
-    const topicGroups = {};
-    for (const c of createdIds) {
-      if (c.topic) {
-        const key = c.topic.trim();
-        if (!topicGroups[key]) topicGroups[key] = [];
-        topicGroups[key].push(c.id);
-      }
-    }
-    for (const [tag, ids] of Object.entries(topicGroups)) {
-      const tagRes = await tagQuestions(ids, tag, hdrs);
-      if (tagRes?.errors) logs.push({ msg: `Topic tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Tagged ${ids.length} question(s) with topic "${tag}"`, cls: 'ok' });
-    }
-
-    // Tag with bloom level
-    const bloomGroups = {};
-    for (const c of createdIds) {
-      if (c.bloom) {
-        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
-        if (!bloomGroups[key]) bloomGroups[key] = [];
-        bloomGroups[key].push(c.id);
-      }
-    }
-    for (const [tag, ids] of Object.entries(bloomGroups)) {
-      const tagRes = await tagQuestions(ids, tag, hdrs);
-      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Tagged ${ids.length} question(s) with "${tag}"`, cls: 'ok' });
-    }
-
-    // Set difficulty
-    const diffGroups = {};
-    for (const c of createdIds) {
-      if (c.difficulty) {
-        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
-        diffGroups[c.difficulty].push(c.id);
-      }
-    }
-    for (const [diff, ids] of Object.entries(diffGroups)) {
-      const res = await setDifficulty(ids, diff, hdrs);
-      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Set ${ids.length} question(s) to ${diff}`, cls: 'ok' });
-    }
+    // Tag with column tags + bloom + difficulty
+    await applyPostImportMeta(createdIds, hdrs, logs, 'FIB');
 
     // Refresh library
     if (created > 0) await refreshLibrary();
@@ -734,7 +743,7 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
-        if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
+        if (cq?.id) createdIds.push({ id: cq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `MCQ Q${idx + 1} created — #${cq?.libraryId} (${q.choices.length} choices, ${opts.points} pts)`, cls: 'ok' });
         created++;
       }
@@ -747,49 +756,8 @@ function cadmusAction(action, options) {
       else logs.push({ msg: `Tagged ${allIds.length} MCQ(s) with "${opts.tag}"`, cls: 'ok' });
     }
 
-    // Tag with topic
-    const topicGroups = {};
-    for (const c of createdIds) {
-      if (c.topic) {
-        const key = c.topic.trim();
-        if (!topicGroups[key]) topicGroups[key] = [];
-        topicGroups[key].push(c.id);
-      }
-    }
-    for (const [tag, ids] of Object.entries(topicGroups)) {
-      const tagRes = await tagQuestions(ids, tag, hdrs);
-      if (tagRes?.errors) logs.push({ msg: `Topic tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Tagged ${ids.length} MCQ(s) with topic "${tag}"`, cls: 'ok' });
-    }
-
-    // Tag with bloom level
-    const bloomGroups = {};
-    for (const c of createdIds) {
-      if (c.bloom) {
-        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
-        if (!bloomGroups[key]) bloomGroups[key] = [];
-        bloomGroups[key].push(c.id);
-      }
-    }
-    for (const [tag, ids] of Object.entries(bloomGroups)) {
-      const tagRes = await tagQuestions(ids, tag, hdrs);
-      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Tagged ${ids.length} MCQ(s) with "${tag}"`, cls: 'ok' });
-    }
-
-    // Set difficulty
-    const diffGroups = {};
-    for (const c of createdIds) {
-      if (c.difficulty) {
-        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
-        diffGroups[c.difficulty].push(c.id);
-      }
-    }
-    for (const [diff, ids] of Object.entries(diffGroups)) {
-      const res = await setDifficulty(ids, diff, hdrs);
-      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Set ${ids.length} MCQ(s) to ${diff}`, cls: 'ok' });
-    }
+    // Tag with column tags + bloom + difficulty
+    await applyPostImportMeta(createdIds, hdrs, logs, 'MCQ');
 
     if (created > 0) await refreshLibrary();
     logs.push({ msg: `MCQ import complete: ${created} created, ${failed} failed`, cls: created > 0 ? 'ok' : 'err' });
@@ -875,7 +843,7 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
-        if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
+        if (cq?.id) createdIds.push({ id: cq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Matching Q${idx + 1} created — #${cq?.libraryId} (${q.pairs.length} pairs, ${totalPoints} pts)`, cls: 'ok' });
         created++;
       }
@@ -888,49 +856,8 @@ function cadmusAction(action, options) {
       else logs.push({ msg: `Tagged ${allIds.length} Matching question(s) with "${opts.tag}"`, cls: 'ok' });
     }
 
-    // Tag with topic
-    const topicGroups = {};
-    for (const c of createdIds) {
-      if (c.topic) {
-        const key = c.topic.trim();
-        if (!topicGroups[key]) topicGroups[key] = [];
-        topicGroups[key].push(c.id);
-      }
-    }
-    for (const [tag, ids] of Object.entries(topicGroups)) {
-      const tagRes = await tagQuestions(ids, tag, hdrs);
-      if (tagRes?.errors) logs.push({ msg: `Topic tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Tagged ${ids.length} Matching question(s) with topic "${tag}"`, cls: 'ok' });
-    }
-
-    // Tag with bloom level
-    const bloomGroups = {};
-    for (const c of createdIds) {
-      if (c.bloom) {
-        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
-        if (!bloomGroups[key]) bloomGroups[key] = [];
-        bloomGroups[key].push(c.id);
-      }
-    }
-    for (const [tag, ids] of Object.entries(bloomGroups)) {
-      const tagRes = await tagQuestions(ids, tag, hdrs);
-      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Tagged ${ids.length} Matching question(s) with "${tag}"`, cls: 'ok' });
-    }
-
-    // Set difficulty
-    const diffGroups = {};
-    for (const c of createdIds) {
-      if (c.difficulty) {
-        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
-        diffGroups[c.difficulty].push(c.id);
-      }
-    }
-    for (const [diff, ids] of Object.entries(diffGroups)) {
-      const res = await setDifficulty(ids, diff, hdrs);
-      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Set ${ids.length} Matching question(s) to ${diff}`, cls: 'ok' });
-    }
+    // Tag with column tags + bloom + difficulty
+    await applyPostImportMeta(createdIds, hdrs, logs, 'Matching');
 
     if (created > 0) await refreshLibrary();
     logs.push({ msg: `Matching import complete: ${created} created, ${failed} failed`, cls: created > 0 ? 'ok' : 'err' });
@@ -1005,7 +932,7 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
-        if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
+        if (cq?.id) createdIds.push({ id: cq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Short Q${idx + 1} created — #${cq?.libraryId} (${correctValues.length} answer(s), ${opts.points} pts)`, cls: 'ok' });
         created++;
       }
@@ -1018,49 +945,8 @@ function cadmusAction(action, options) {
       else logs.push({ msg: `Tagged ${allIds.length} Short question(s) with "${opts.tag}"`, cls: 'ok' });
     }
 
-    // Tag with topic
-    const topicGroups = {};
-    for (const c of createdIds) {
-      if (c.topic) {
-        const key = c.topic.trim();
-        if (!topicGroups[key]) topicGroups[key] = [];
-        topicGroups[key].push(c.id);
-      }
-    }
-    for (const [tag, ids] of Object.entries(topicGroups)) {
-      const tagRes = await tagQuestions(ids, tag, hdrs);
-      if (tagRes?.errors) logs.push({ msg: `Topic tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Tagged ${ids.length} Short question(s) with topic "${tag}"`, cls: 'ok' });
-    }
-
-    // Tag with bloom level
-    const bloomGroups = {};
-    for (const c of createdIds) {
-      if (c.bloom) {
-        const key = `bloom-${c.bloom.toLowerCase().trim()}`;
-        if (!bloomGroups[key]) bloomGroups[key] = [];
-        bloomGroups[key].push(c.id);
-      }
-    }
-    for (const [tag, ids] of Object.entries(bloomGroups)) {
-      const tagRes = await tagQuestions(ids, tag, hdrs);
-      if (tagRes?.errors) logs.push({ msg: `Bloom tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Tagged ${ids.length} Short question(s) with "${tag}"`, cls: 'ok' });
-    }
-
-    // Set difficulty
-    const diffGroups = {};
-    for (const c of createdIds) {
-      if (c.difficulty) {
-        if (!diffGroups[c.difficulty]) diffGroups[c.difficulty] = [];
-        diffGroups[c.difficulty].push(c.id);
-      }
-    }
-    for (const [diff, ids] of Object.entries(diffGroups)) {
-      const res = await setDifficulty(ids, diff, hdrs);
-      if (res?.errors) logs.push({ msg: `Difficulty failed: ${res.errors[0].message}`, cls: 'warn' });
-      else logs.push({ msg: `Set ${ids.length} Short question(s) to ${diff}`, cls: 'ok' });
-    }
+    // Tag with column tags + bloom + difficulty
+    await applyPostImportMeta(createdIds, hdrs, logs, 'Short');
 
     if (created > 0) await refreshLibrary();
     logs.push({ msg: `Short answer import complete: ${created} created, ${failed} failed`, cls: created > 0 ? 'ok' : 'err' });
@@ -1103,9 +989,11 @@ const INTERNAL_FIELDS = [
   { key: 'explanation', label: 'Explanation',  required: false },
   { key: 'bloom',       label: 'Bloom Level', required: false },
   { key: 'diff',        label: 'Difficulty',  required: false },
-  { key: 'topic',       label: 'Topic',       required: false },
   { key: 'source',      label: 'Source',      required: false },
 ];
+
+// Columns that should be auto-checked as tag sources
+const AUTO_TAG_KEYS = ['topic', 'tags', 'subject', 'source', 'source file', 'source_file'];
 
 // ── Build mapping UI ─────────────────────────────────────────────────────────
 function showColumnMapping(headers, rows) {
@@ -1119,6 +1007,7 @@ function showColumnMapping(headers, rows) {
   const container = $('#mapping-rows');
   container.innerHTML = '';
 
+  // ── Single-select field dropdowns ──
   for (const field of INTERNAL_FIELDS) {
     const row = document.createElement('div');
     row.className = 'mapping-row';
@@ -1136,7 +1025,6 @@ function showColumnMapping(headers, rows) {
     const select = document.createElement('select');
     select.dataset.field = field.key;
 
-    // "(unmapped)" option
     const optNone = document.createElement('option');
     optNone.value = '';
     optNone.textContent = '— unmapped —';
@@ -1153,14 +1041,12 @@ function showColumnMapping(headers, rows) {
     select.className = select.value ? 'mapped' : 'unmapped';
     select.addEventListener('change', () => {
       select.className = select.value ? 'mapped' : 'unmapped';
-      // Update sample value
       const sampleEl = row.querySelector('.sample-val');
       if (sampleEl) {
         sampleEl.textContent = select.value ? String(rows[0]?.[select.value] ?? '').substring(0, 40) : '';
       }
     });
 
-    // Sample value from first data row
     const sample = document.createElement('span');
     sample.className = 'sample-val';
     sample.textContent = autoMap[field.key] ? String(rows[0]?.[autoMap[field.key]] ?? '').substring(0, 40) : '';
@@ -1170,6 +1056,50 @@ function showColumnMapping(headers, rows) {
     row.appendChild(sample);
     container.appendChild(row);
   }
+
+  // ── Multi-select tag columns ──
+  const tagSection = document.createElement('div');
+  tagSection.className = 'mapping-tag-section';
+
+  const tagLabel = document.createElement('div');
+  tagLabel.className = 'mapping-tag-label';
+  tagLabel.innerHTML = '<span class="field-label" style="text-align:left">Tag columns</span>'
+    + '<span class="mapping-hint">Each checked column\'s values will be applied as tags to imported questions</span>';
+  tagSection.appendChild(tagLabel);
+
+  const tagGrid = document.createElement('div');
+  tagGrid.className = 'mapping-tag-grid';
+  tagGrid.id = 'mapping-tag-checkboxes';
+
+  for (const hdr of headers) {
+    const lbl = document.createElement('label');
+    lbl.className = 'mapping-tag-item';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = hdr;
+    cb.dataset.tagCol = hdr;
+
+    // Auto-check columns that match known tag-like headers
+    const hdrLower = hdr.toLowerCase().trim();
+    if (AUTO_TAG_KEYS.includes(hdrLower)) cb.checked = true;
+
+    const text = document.createElement('span');
+    text.textContent = hdr;
+
+    const sampleVal = String(rows[0]?.[hdr] ?? '').substring(0, 30);
+    const sampleSpan = document.createElement('span');
+    sampleSpan.className = 'mapping-tag-sample';
+    sampleSpan.textContent = sampleVal ? `(${sampleVal})` : '';
+
+    lbl.appendChild(cb);
+    lbl.appendChild(text);
+    lbl.appendChild(sampleSpan);
+    tagGrid.appendChild(lbl);
+  }
+
+  tagSection.appendChild(tagGrid);
+  container.appendChild(tagSection);
 
   $('#column-mapping').style.display = '';
 }
@@ -1186,6 +1116,14 @@ function getUserColumnMap() {
     if (sel.value) map[sel.dataset.field] = sel.value;
   });
   return map;
+}
+
+function getUserTagColumns() {
+  const cols = [];
+  document.querySelectorAll('#mapping-tag-checkboxes input[type="checkbox"]:checked').forEach(cb => {
+    cols.push(cb.value);
+  });
+  return cols;
 }
 
 // ── Type normalisation (mirrors cadmus_qti_generator.py normalise_type) ──────
@@ -1222,7 +1160,8 @@ function splitFibAnswers(ansList, nBlanks) {
 
 // ── Excel multi-type parser ──────────────────────────────────────────────────
 // customColMap: optional { internalKey: 'Excel Column Name' } override
-function parseExcelAll(rows, customColMap) {
+// tagColumns: optional array of Excel column names whose values become tags
+function parseExcelAll(rows, customColMap, tagColumns) {
   const result = { fib: [], mcq: [], matching: [], short: [] };
   if (!rows.length) return result;
 
@@ -1239,8 +1178,18 @@ function parseExcelAll(rows, customColMap) {
     }
   }
 
+  // Tag columns to collect — defaults to topic column if no explicit list
+  const tagCols = tagColumns || (colMap.topic ? [colMap.topic] : []);
+
   for (const row of rows) {
     const get = (key) => String(row[colMap[key]] ?? '').trim();
+
+    // Collect tags from all checked tag columns
+    const tags = [];
+    for (const col of tagCols) {
+      const val = String(row[col] ?? '').trim();
+      if (val) tags.push(val);
+    }
 
     const num = get('num');
     const questionText = get('question');
@@ -1290,7 +1239,7 @@ function parseExcelAll(rows, customColMap) {
         blanks: groups.map(g => ({ answers: g })),
         points: nBlanks,
         feedback: explanation || '',
-        topic: get('topic') || '',
+        tags,
         source: get('source') || '',
         bloom: get('bloom') || '',
         difficulty: normaliseDifficulty(get('diff')),
@@ -1331,7 +1280,7 @@ function parseExcelAll(rows, customColMap) {
         prompt: questionText,
         choices,
         feedback: explanation || '',
-        topic: get('topic') || '',
+        tags,
         bloom: get('bloom') || '',
         difficulty: normaliseDifficulty(get('diff')),
       });
@@ -1369,7 +1318,7 @@ function parseExcelAll(rows, customColMap) {
         prompt: questionText,
         answers: answers.length > 0 ? answers : [explanation || ''],
         feedback: explanation || '',
-        topic: get('topic') || '',
+        tags,
         bloom: get('bloom') || '',
         difficulty: normaliseDifficulty(get('diff')),
       });
@@ -1761,6 +1710,7 @@ document.getElementById('btn-apply-mapping')?.addEventListener('click', () => {
   if (!pendingExcelRows?.length) return;
 
   const colMap = getUserColumnMap();
+  const tagCols = getUserTagColumns();
 
   // Validate required fields
   const missing = INTERNAL_FIELDS.filter(f => f.required && !colMap[f.key]);
@@ -1770,10 +1720,11 @@ document.getElementById('btn-apply-mapping')?.addEventListener('click', () => {
   }
 
   try {
-    parsedByType = parseExcelAll(pendingExcelRows, colMap);
+    parsedByType = parseExcelAll(pendingExcelRows, colMap, tagCols);
     updateImportUI();
     const total = parsedByType.fib.length + parsedByType.mcq.length + parsedByType.matching.length + parsedByType.short.length;
-    log(`Parsed ${total} question(s) (${parsedByType.fib.length} FIB, ${parsedByType.mcq.length} MCQ, ${parsedByType.matching.length} Matching, ${parsedByType.short.length} Short)`);
+    const tagInfo = tagCols.length ? ` — tagging from: ${tagCols.join(', ')}` : '';
+    log(`Parsed ${total} question(s) (${parsedByType.fib.length} FIB, ${parsedByType.mcq.length} MCQ, ${parsedByType.matching.length} Matching, ${parsedByType.short.length} Short)${tagInfo}`);
     hideColumnMapping();
   } catch (err) {
     log(`Parse error: ${err.message}`, 'err');
