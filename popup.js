@@ -1044,10 +1044,12 @@ function normaliseType(raw) {
 
 // ── Difficulty normaliser → EASY | MEDIUM | HARD or '' ───────────────────────
 function normaliseDifficulty(raw) {
-  const d = (raw || '').toLowerCase().trim();
-  if (d === 'easy' || d === '1' || d === 'low') return 'EASY';
-  if (d === 'medium' || d === '2' || d === 'moderate' || d === 'med') return 'MEDIUM';
-  if (d === 'hard' || d === '3' || d === 'high' || d === 'difficult') return 'HARD';
+  // Strip decorative chars (●, ★, •, etc.) and whitespace, then match keyword
+  const d = (raw || '').replace(/[^a-zA-Z0-9\s]/g, '').toLowerCase().trim();
+  if (!d) return '';
+  if (d.includes('easy') || d === '1' || d.includes('low')) return 'EASY';
+  if (d.includes('medium') || d === '2' || d.includes('moderate') || d === 'med') return 'MEDIUM';
+  if (d.includes('hard') || d === '3' || d.includes('high') || d.includes('difficult')) return 'HARD';
   return '';
 }
 
