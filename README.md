@@ -1,6 +1,6 @@
 # Cadmus Question Library Tools
 
-A Chrome extension that provides a UI for bulk editing, importing, and managing questions in [Cadmus](https://cadmus.io) question libraries — replacing the need to run console scripts manually.
+A Chrome extension that enhances the [Cadmus](https://cadmus.io) question library interface with streamlined bulk import from Excel and QTI XML, flexible column mapping, automatic tagging (topic, Bloom level, difficulty, filename), and batch editing of points, shuffle, and similarity settings across selected questions.
 
 ## Screenshots
 
@@ -58,6 +58,8 @@ The log panel at the bottom shows real-time progress for all operations.
 
 ## Excel Format
 
+> **Sample file**: [`docs/sample-question-bank.xlsx`](docs/sample-question-bank.xlsx) — 9 questions (2 FIB, 3 MCQ, 2 Matching, 2 Short Answer) with a mix of Bloom levels, difficulties, and topics. Use it to test the import flow or as a template for your own question banks.
+
 The import expects a column layout matching the standard question bank template. Columns can appear in any order — the Column Mapping UI auto-detects headers by name and lets you reassign them if needed.
 
 | Expected Header | Description |
@@ -108,6 +110,7 @@ After making changes to the source files:
 │   ├── icon48.png         # Extensions page icon
 │   └── icon128.png        # Web Store / install dialog icon
 └── docs/
+    ├── sample-question-bank.xlsx
     ├── screenshot-import-tab.png
     ├── screenshot-column-mapping.png
     ├── screenshot-bulk-edit-tab.png
