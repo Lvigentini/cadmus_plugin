@@ -4,9 +4,13 @@ A Chrome extension that provides a UI for bulk editing, importing, and managing 
 
 ## Screenshots
 
-| Import Tab | Bulk Edit Tab |
+| Import Tab | Column Mapping |
 |:---:|:---:|
-| ![Import tab with a file loaded](docs/screenshot-import-tab.png) | ![Bulk Edit tab with log output](docs/screenshot-bulk-edit-tab.png) |
+| ![Import tab — empty state](docs/screenshot-import-tab.png) | ![Column mapping with tag checkboxes](docs/screenshot-column-mapping.png) |
+
+| Bulk Edit Tab | Delete Tab |
+|:---:|:---:|
+| ![Bulk Edit tab with MCQ options](docs/screenshot-bulk-edit-tab.png) | ![Delete tab with warning](docs/screenshot-delete-tab.png) |
 
 ## Features
 
@@ -14,6 +18,13 @@ A Chrome extension that provides a UI for bulk editing, importing, and managing 
 - **Fill-in-Blank, MCQ, Matching, Short Answer** — all four question types supported
 - **From Excel (.xlsx)** — Reads the standard question bank format; mixed types detected automatically
 - **From QTI XML (.xml)** — Reads Blackboard QTI 1.2 XML exports
+- **Column Mapping UI** — After loading an Excel file, a mapping panel lets you verify or reassign how spreadsheet columns map to question fields (row number, type, question text, answers, explanation, Bloom level, difficulty, source)
+- **Tag columns** — Check any column in the mapping panel to apply its values as tags on imported questions (e.g. topic, source file, or any custom column)
+- **Import All** — One-click button to import every question in the file across all detected types
+- **Bloom-level tagging** — Automatically tags each imported question with its Bloom level (e.g. `bloom-remember`, `bloom-apply`)
+- **Difficulty tagging** — Tags questions with normalised difficulty (e.g. `difficulty-hard`), stripping decorative characters like `●●●`
+- **Filename tagging** — Tags questions with the source filename for traceability
+- **FIB auto-blank detection** — Fills in blank markers (`___1___`) automatically when the question text contains them
 - Type-specific options (points, shuffle, similarity) per accordion card
 - Cross-pollinates distractors for fill-in-blank questions
 
@@ -38,30 +49,33 @@ A Chrome extension that provides a UI for bulk editing, importing, and managing 
 1. Navigate to a Cadmus Question Library page
    URL format: `https://teach.cadmus.io/{tenant}/assessment/{id}/library`
 2. Click the extension icon — the status bar turns **green** when connected
-3. Use the accordion cards to:
-   - **Edit**: Select questions using the library checkboxes first, then set options and click **Run**
-   - **Import**: Pick an `.xlsx` or `.xml` file, review the preview, adjust points/shuffle, and click **Import**
-   - **Delete**: Select questions and click **Delete** (confirmation required)
+3. Use the tabs to:
+   - **Import**: Pick an `.xlsx` or `.xml` file → verify the column mapping → check which columns to use as tags → click **Apply Mapping & Parse** → expand type cards to adjust points/shuffle → click **Import All Questions**
+   - **Bulk Edit**: Select questions using the library checkboxes first, then expand a type card, set options, and click **Run**
+   - **Delete**: Select questions and click **Delete Selected** (confirmation required)
 
 The log panel at the bottom shows real-time progress for all operations.
 
 ## Excel Format
 
-The import expects the same column layout as `cadmus_qti_generator.py`:
+The import expects a column layout matching the standard question bank template. Columns can appear in any order — the Column Mapping UI auto-detects headers by name and lets you reassign them if needed.
 
-| Column | Header | Description |
-|--------|--------|-------------|
-| A | `#` | Row number / question ID |
-| B | `Type` | Must contain "Fill in the Blank" |
-| C | `Question` | Question text with `___1___`, `___2___` blank markers |
-| D | `Bloom Level` | Cognitive level (metadata only) |
-| E | `Difficulty` | e.g. ● Easy / ●● Medium / ●●● Hard |
-| F | `Topic` | Topic/tag string |
-| G | `Answer / Details` | Semicolon-separated accepted answers |
-| H | `Explanation` | Feedback shown after answering |
-| I | `source_file` | Source filename (metadata only) |
+| Expected Header | Description |
+|-----------------|-------------|
+| `#` | Row number / question ID |
+| `Type` | Question type: MCQ, Fill in the Blank, Matching, Short Answer |
+| `Question` | Question text (FIB questions use `___1___`, `___2___` blank markers) |
+| `Bloom Level` | Cognitive level — used for auto-tagging (e.g. `bloom-remember`) |
+| `Difficulty` | e.g. ● Easy / ●● Medium / ●●● Hard — decorative chars stripped for tagging |
+| `Topic` | Topic/tag string — applied as a tag when checked in the mapping panel |
+| `Answer / Details` | Answers: semicolon-separated (FIB), newline-separated with `*` or ✓ for correct (MCQ), `→` or `->` paired (Matching) |
+| `Explanation` | Feedback shown after answering |
+| `source_file` | Source filename — applied as a tag when checked in the mapping panel |
 
-**Answer splitting**: Answers are separated by semicolons. For multi-blank questions, the pool is split across blanks using ceiling division (e.g., 6 answers for 2 blanks → 3 per blank).
+**Answer formats by type**:
+- **Fill-in-Blank**: Semicolons separate accepted answers. For multi-blank questions, the pool is split across blanks using ceiling division (e.g., 6 answers for 2 blanks → 3 per blank).
+- **MCQ**: Newline- or semicolon-separated choices (whichever yields more options). Correct answer marked with `*` prefix, ✓/✔ suffix, or falls back to last choice. Leading `A.`/`B.`/`C.` labels are stripped automatically.
+- **Matching**: Newline-separated pairs using `→` or `->` as separator (e.g. `Term → Definition`).
 
 ## Distractor Logic
 
@@ -95,7 +109,9 @@ After making changes to the source files:
 │   └── icon128.png        # Web Store / install dialog icon
 └── docs/
     ├── screenshot-import-tab.png
-    └── screenshot-bulk-edit-tab.png
+    ├── screenshot-column-mapping.png
+    ├── screenshot-bulk-edit-tab.png
+    └── screenshot-delete-tab.png
 ```
 
 ## Technical Notes
