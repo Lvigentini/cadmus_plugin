@@ -593,7 +593,7 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
-        if (cq?.id) createdIds.push({ id: cq.id, bloom: q.bloom || '', difficulty: q.difficulty || '' });
+        if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Q${idx + 1} created — #${cq?.libraryId} (${q.blanks.length} blank(s), ${totalPoints} pts)`, cls: 'ok' });
         created++;
       }
@@ -605,6 +605,21 @@ function cadmusAction(action, options) {
       const tagRes = await tagQuestions(allIds, opts.tag, hdrs);
       if (tagRes?.errors) logs.push({ msg: `Tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
       else logs.push({ msg: `Tagged ${allIds.length} question(s) with "${opts.tag}"`, cls: 'ok' });
+    }
+
+    // Tag with topic
+    const topicGroups = {};
+    for (const c of createdIds) {
+      if (c.topic) {
+        const key = c.topic.trim();
+        if (!topicGroups[key]) topicGroups[key] = [];
+        topicGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(topicGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Topic tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} question(s) with topic "${tag}"`, cls: 'ok' });
     }
 
     // Tag with bloom level
@@ -719,7 +734,7 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
-        if (cq?.id) createdIds.push({ id: cq.id, bloom: q.bloom || '', difficulty: q.difficulty || '' });
+        if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `MCQ Q${idx + 1} created — #${cq?.libraryId} (${q.choices.length} choices, ${q.points || opts.points} pts)`, cls: 'ok' });
         created++;
       }
@@ -730,6 +745,21 @@ function cadmusAction(action, options) {
       const tagRes = await tagQuestions(allIds, opts.tag, hdrs);
       if (tagRes?.errors) logs.push({ msg: `Tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
       else logs.push({ msg: `Tagged ${allIds.length} MCQ(s) with "${opts.tag}"`, cls: 'ok' });
+    }
+
+    // Tag with topic
+    const topicGroups = {};
+    for (const c of createdIds) {
+      if (c.topic) {
+        const key = c.topic.trim();
+        if (!topicGroups[key]) topicGroups[key] = [];
+        topicGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(topicGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Topic tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} MCQ(s) with topic "${tag}"`, cls: 'ok' });
     }
 
     // Tag with bloom level
@@ -845,7 +875,7 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
-        if (cq?.id) createdIds.push({ id: cq.id, bloom: q.bloom || '', difficulty: q.difficulty || '' });
+        if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Matching Q${idx + 1} created — #${cq?.libraryId} (${q.pairs.length} pairs, ${totalPoints} pts)`, cls: 'ok' });
         created++;
       }
@@ -856,6 +886,21 @@ function cadmusAction(action, options) {
       const tagRes = await tagQuestions(allIds, opts.tag, hdrs);
       if (tagRes?.errors) logs.push({ msg: `Tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
       else logs.push({ msg: `Tagged ${allIds.length} Matching question(s) with "${opts.tag}"`, cls: 'ok' });
+    }
+
+    // Tag with topic
+    const topicGroups = {};
+    for (const c of createdIds) {
+      if (c.topic) {
+        const key = c.topic.trim();
+        if (!topicGroups[key]) topicGroups[key] = [];
+        topicGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(topicGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Topic tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} Matching question(s) with topic "${tag}"`, cls: 'ok' });
     }
 
     // Tag with bloom level
@@ -960,7 +1005,7 @@ function cadmusAction(action, options) {
         failed++;
       } else {
         const cq = res?.data?.createQuestion;
-        if (cq?.id) createdIds.push({ id: cq.id, bloom: q.bloom || '', difficulty: q.difficulty || '' });
+        if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
         logs.push({ msg: `Short Q${idx + 1} created — #${cq?.libraryId} (${correctValues.length} answer(s), ${q.points || opts.points} pts)`, cls: 'ok' });
         created++;
       }
@@ -971,6 +1016,21 @@ function cadmusAction(action, options) {
       const tagRes = await tagQuestions(allIds, opts.tag, hdrs);
       if (tagRes?.errors) logs.push({ msg: `Tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
       else logs.push({ msg: `Tagged ${allIds.length} Short question(s) with "${opts.tag}"`, cls: 'ok' });
+    }
+
+    // Tag with topic
+    const topicGroups = {};
+    for (const c of createdIds) {
+      if (c.topic) {
+        const key = c.topic.trim();
+        if (!topicGroups[key]) topicGroups[key] = [];
+        topicGroups[key].push(c.id);
+      }
+    }
+    for (const [tag, ids] of Object.entries(topicGroups)) {
+      const tagRes = await tagQuestions(ids, tag, hdrs);
+      if (tagRes?.errors) logs.push({ msg: `Topic tagging failed: ${tagRes.errors[0].message}`, cls: 'warn' });
+      else logs.push({ msg: `Tagged ${ids.length} Short question(s) with topic "${tag}"`, cls: 'ok' });
     }
 
     // Tag with bloom level
@@ -1132,19 +1192,40 @@ function parseExcelAll(arrayBuffer) {
         blanks: groups.map(g => ({ answers: g })),
         points: nBlanks,
         feedback: explanation || '',
-        tags: get('topic') || '',
+        topic: get('topic') || '',
         source: get('source') || '',
         bloom: get('bloom') || '',
         difficulty: normaliseDifficulty(get('diff')),
       });
 
     } else if (qType === 'mcq') {
-      // MCQ parsing: semicolons separate options, * prefix marks correct, OR last is correct
-      const rawChoices = answersRaw.split(';').map(a => a.trim()).filter(Boolean);
+      // MCQ parsing: split by newlines or semicolons (whichever yields more choices)
+      const bySemicolon = answersRaw.split(';').map(a => a.trim()).filter(Boolean);
+      const byNewline = answersRaw.split(/\r?\n/).map(a => a.trim()).filter(Boolean);
+      const rawChoices = byNewline.length > bySemicolon.length ? byNewline : bySemicolon;
+
+      // Detect correct-answer markers: * prefix, ✓ suffix, or ✔ suffix
       let hasStarMarker = rawChoices.some(c => c.startsWith('*'));
+      const hasCheckMark = rawChoices.some(c => /[✓✔]/.test(c));
+
       const choices = rawChoices.map((c, ci) => {
-        const isCorrect = hasStarMarker ? c.startsWith('*') : (ci === rawChoices.length - 1);
-        const text = c.startsWith('*') ? c.substring(1).trim() : c;
+        let text = c;
+        let isCorrect = false;
+
+        // Strip leading letter labels (A. B. C. D. etc.)
+        text = text.replace(/^[A-Za-z][.)]\s*/, '');
+
+        if (hasStarMarker) {
+          isCorrect = text.startsWith('*');
+          if (isCorrect) text = text.substring(1).trim();
+        } else if (hasCheckMark) {
+          isCorrect = /[✓✔]/.test(text);
+          text = text.replace(/[✓✔]/g, '').trim();
+        } else {
+          // Fallback: last choice is correct
+          isCorrect = (ci === rawChoices.length - 1);
+        }
+
         return { text, correct: isCorrect };
       });
 
@@ -1153,6 +1234,7 @@ function parseExcelAll(arrayBuffer) {
         choices,
         points: 1,
         feedback: explanation || '',
+        topic: get('topic') || '',
         bloom: get('bloom') || '',
         difficulty: normaliseDifficulty(get('diff')),
       });
@@ -1178,6 +1260,7 @@ function parseExcelAll(arrayBuffer) {
           pairs,
           points: 1,
           feedback: explanation || '',
+          topic: get('topic') || '',
           bloom: get('bloom') || '',
           difficulty: normaliseDifficulty(get('diff')),
         });
@@ -1191,6 +1274,7 @@ function parseExcelAll(arrayBuffer) {
         answers: answers.length > 0 ? answers : [explanation || ''],
         points: 1,
         feedback: explanation || '',
+        topic: get('topic') || '',
         bloom: get('bloom') || '',
         difficulty: normaliseDifficulty(get('diff')),
       });
