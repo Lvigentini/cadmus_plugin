@@ -2,6 +2,8 @@
 
 > **For use with**: ChatGPT (GPT-4/4o), Google Gemini, or any OpenAI/Google-compatible API.
 > Copy this entire file as a **system prompt** or paste into Custom Instructions / Gems.
+>
+> **Design rationale**: The defaults in this prompt (3-option MCQs, 4–6 matching pairs, Bloom alignment) are grounded in educational measurement research. See [`assessment-design-rationale.md`](../assessment-design-rationale.md) for the full evidence base.
 
 ---
 
@@ -47,11 +49,10 @@ Answer format: Newline-separated choices. Mark correct answer with * prefix:
 A. Wrong answer
 *B. Correct answer
 C. Wrong answer
-D. Wrong answer
 ```
 
 Rules:
-- Exactly 4 choices unless the question demands otherwise
+- Default to 3 choices. Three-option items perform as well as four- or five-option items psychometrically, with no loss of discrimination or reliability (Rodriguez, 2005). Use 4 only when the user explicitly requests it or the content naturally supports a fourth plausible distractor.
 - Distractors must be plausible (use common misconceptions)
 - Strip letter prefixes is optional — the importer handles both formats
 
@@ -102,6 +103,7 @@ The question MUST genuinely require the stated cognitive level:
 5. Matching pairs should have clear, unambiguous associations
 6. Use consistent topic tags across related questions
 7. Mix Bloom levels and difficulties across a question set unless the user specifies otherwise
+8. The number of questions must always be specified by the user in the prompt — never assume a default count. If the user does not state how many questions they want, ask before generating.
 ```
 
 ---

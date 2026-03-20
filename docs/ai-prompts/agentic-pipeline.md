@@ -2,6 +2,8 @@
 
 > **For use with**: OpenClaw, LangGraph, CrewAI, AutoGen, or any multi-agent orchestration framework.
 > This file defines the agent roles, tools, and workflow for automated question bank generation.
+>
+> **Design rationale**: The defaults used by these agents (3-option MCQs, 4–6 matching pairs, user-specified question counts, Bloom alignment) are grounded in educational measurement research. See [`assessment-design-rationale.md`](../assessment-design-rationale.md) for the evidence base, including Rodriguez (2005), Haladyna et al. (2002), and Anderson & Krathwohl (2001).
 
 ---
 
@@ -34,7 +36,8 @@ Given source material (lecture notes, textbook chapters, syllabus documents), ex
 3. TOPIC_MAP: A hierarchy of topics and subtopics for tag assignment
 4. DIFFICULTY_DISTRIBUTION: Suggested % split across Easy/Medium/Hard
 5. BLOOM_DISTRIBUTION: Suggested % split across Remember/Understand/Apply/Analyze/Evaluate/Create
-6. QUESTION_TYPE_ALLOCATION: How many of each type (FIB, MCQ, Matching, Short) per topic
+6. QUESTION_COUNT: The total number of questions to generate (as specified by the user in the prompt — do NOT assume a default; ask the user if not provided)
+7. QUESTION_TYPE_ALLOCATION: How many of each type (FIB, MCQ, Matching, Short) per topic, summing to the requested total
 
 Output as structured JSON.
 ```
@@ -99,9 +102,9 @@ Fill in the Blank:
 - Example: "nephron; kidney unit; functional unit"
 
 Multiple Choice:
-- 4 choices, newline-separated
+- 3 choices by default, newline-separated. Three-option items perform as well as four- or five-option formats psychometrically (Rodriguez, 2005). Use 4 only when the user explicitly requests it or the content naturally supports a fourth plausible distractor.
 - Correct answer prefixed with *
-- Example: "A. Wrong\n*B. Correct\nC. Wrong\nD. Wrong"
+- Example: "A. Wrong\n*B. Correct\nC. Wrong"
 
 Matching:
 - 4–6 newline-separated pairs with → separator
@@ -166,7 +169,7 @@ Review each question against these criteria and return a pass/fail verdict with 
 
 3. FORMAT_COMPLIANCE: Does the answer format match the type specification?
    - FIB: has ___N___ markers and semicolon answers
-   - MCQ: has 4 choices with exactly one * marked correct
+   - MCQ: has 3 choices (default) with exactly one * marked correct
    - Matching: has → pairs
    - Short: has semicolon-separated keywords
 
@@ -332,7 +335,7 @@ result = crew.kickoff(inputs={"documents": "path/to/lecture-notes.pdf", "questio
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `question_count` | 10 | Total number of questions to generate |
+| `question_count` | *user-specified* | Total number of questions to generate (must be provided in the prompt) |
 | `type_mix` | `auto` | Distribution across types, or `auto` for balanced |
 | `bloom_distribution` | `auto` | Custom Bloom level weights, or `auto` |
 | `difficulty_distribution` | `auto` | Custom difficulty weights, or `auto` |

@@ -19,6 +19,7 @@ A Chrome extension that enhances the [Cadmus](https://cadmus.io) question librar
   - [Column Reference](#column-reference)
   - [Answer Formats by Type](#answer-formats-by-type)
   - [Distractor Logic (FIB)](#distractor-logic-fib)
+- [Assessment Design Rationale](#assessment-design-rationale)
 - [AI-Assisted Question Generation](#ai-assisted-question-generation)
 - [Development](#development)
 - [File Structure](#file-structure)
@@ -164,9 +165,19 @@ Each fill-in-blank automatically gets **2 distractors** (wrong answers) pulled f
 
 ---
 
+## Assessment Design Rationale
+
+The defaults used by the import system and the AI prompt templates — three MCQ options, 4–6 matching pairs, user-specified question counts, Bloom-level tagging — are grounded in educational measurement research. A dedicated document explains the evidence behind each design choice:
+
+> **📄 [`docs/assessment-design-rationale.md`](docs/assessment-design-rationale.md)** — covers MCQ option count (Rodriguez, 2005), distractor quality (Haladyna et al., 2002), FIB cloze design, matching pair guidelines, short answer auto-marking, Bloom alignment (Anderson & Krathwohl, 2001), and difficulty calibration.
+
+This document is intended for question authors, instructional designers, and anyone configuring or extending the import pipeline — whether manually or via the agentic workflow below.
+
+---
+
 ## AI-Assisted Question Generation
 
-Three prompt templates are provided in `docs/ai-prompts/` for generating question banks in the correct Excel format using different AI tools:
+Three prompt templates are provided in `docs/ai-prompts/` for generating question banks in the correct Excel format using different AI tools. Each template applies the defaults documented in the [Assessment Design Rationale](docs/assessment-design-rationale.md):
 
 | File | Use with | Description |
 |------|----------|-------------|
@@ -203,6 +214,7 @@ After making changes to the source files:
 │   ├── icon48.png         # Extensions page icon
 │   └── icon128.png        # Web Store / install dialog icon
 └── docs/
+    ├── assessment-design-rationale.md
     ├── sample-question-bank.xlsx
     ├── ai-prompts/
     │   ├── claude-skill.md
