@@ -720,7 +720,7 @@ function cadmusAction(action, options) {
           feedback: q.feedback || '',
           promptImage: null,
           parentQuestionId: null,
-          points: q.points || opts.points,
+          points: opts.points,
           shuffle: opts.shuffle,
           promptDoc,
           fields,
@@ -735,7 +735,7 @@ function cadmusAction(action, options) {
       } else {
         const cq = res?.data?.createQuestion;
         if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
-        logs.push({ msg: `MCQ Q${idx + 1} created — #${cq?.libraryId} (${q.choices.length} choices, ${q.points || opts.points} pts)`, cls: 'ok' });
+        logs.push({ msg: `MCQ Q${idx + 1} created — #${cq?.libraryId} (${q.choices.length} choices, ${opts.points} pts)`, cls: 'ok' });
         created++;
       }
     }
@@ -832,7 +832,7 @@ function cadmusAction(action, options) {
       // correctValues: target identifiers in order of sources
       const correctValues = targetSet.map(t => t.identifier);
 
-      const totalPoints = (q.points || opts.points) * q.pairs.length;
+      const totalPoints = opts.points * q.pairs.length;
 
       const fields = [{
         identifier: '1',
@@ -991,7 +991,7 @@ function cadmusAction(action, options) {
           feedback: q.feedback || '',
           promptImage: null,
           parentQuestionId: null,
-          points: q.points || opts.points,
+          points: opts.points,
           shuffle: false,
           promptDoc,
           fields,
@@ -1006,7 +1006,7 @@ function cadmusAction(action, options) {
       } else {
         const cq = res?.data?.createQuestion;
         if (cq?.id) createdIds.push({ id: cq.id, topic: q.topic || '', bloom: q.bloom || '', difficulty: q.difficulty || '' });
-        logs.push({ msg: `Short Q${idx + 1} created — #${cq?.libraryId} (${correctValues.length} answer(s), ${q.points || opts.points} pts)`, cls: 'ok' });
+        logs.push({ msg: `Short Q${idx + 1} created — #${cq?.libraryId} (${correctValues.length} answer(s), ${opts.points} pts)`, cls: 'ok' });
         created++;
       }
     }
@@ -1091,6 +1091,102 @@ const HEADER_MAP = {
 
 let parsedByType = { fib: [], mcq: [], matching: [], short: [] };
 let importFileName = '';
+let pendingExcelRows = null;   // raw rows from XLSX, held until mapping is confirmed
+let pendingExcelHeaders = [];  // raw header names from the spreadsheet
+
+// ── Internal field definitions for column mapping ────────────────────────────
+const INTERNAL_FIELDS = [
+  { key: 'num',         label: '#',           required: true },
+  { key: 'type',        label: 'Type',        required: true },
+  { key: 'question',    label: 'Question',    required: true },
+  { key: 'answers',     label: 'Answers',     required: true },
+  { key: 'explanation', label: 'Explanation',  required: false },
+  { key: 'bloom',       label: 'Bloom Level', required: false },
+  { key: 'diff',        label: 'Difficulty',  required: false },
+  { key: 'topic',       label: 'Topic',       required: false },
+  { key: 'source',      label: 'Source',      required: false },
+];
+
+// ── Build mapping UI ─────────────────────────────────────────────────────────
+function showColumnMapping(headers, rows) {
+  // Auto-detect initial mapping using HEADER_MAP
+  const autoMap = {};
+  for (const hdr of headers) {
+    const key = HEADER_MAP[hdr.toLowerCase().trim()];
+    if (key && !autoMap[key]) autoMap[key] = hdr;
+  }
+
+  const container = $('#mapping-rows');
+  container.innerHTML = '';
+
+  for (const field of INTERNAL_FIELDS) {
+    const row = document.createElement('div');
+    row.className = 'mapping-row';
+
+    const label = document.createElement('span');
+    label.className = 'field-label';
+    label.textContent = field.label;
+    if (field.required) {
+      const req = document.createElement('span');
+      req.className = 'field-required';
+      req.textContent = ' *';
+      label.appendChild(req);
+    }
+
+    const select = document.createElement('select');
+    select.dataset.field = field.key;
+
+    // "(unmapped)" option
+    const optNone = document.createElement('option');
+    optNone.value = '';
+    optNone.textContent = '— unmapped —';
+    select.appendChild(optNone);
+
+    for (const hdr of headers) {
+      const opt = document.createElement('option');
+      opt.value = hdr;
+      opt.textContent = hdr;
+      if (autoMap[field.key] === hdr) opt.selected = true;
+      select.appendChild(opt);
+    }
+
+    select.className = select.value ? 'mapped' : 'unmapped';
+    select.addEventListener('change', () => {
+      select.className = select.value ? 'mapped' : 'unmapped';
+      // Update sample value
+      const sampleEl = row.querySelector('.sample-val');
+      if (sampleEl) {
+        sampleEl.textContent = select.value ? String(rows[0]?.[select.value] ?? '').substring(0, 40) : '';
+      }
+    });
+
+    // Sample value from first data row
+    const sample = document.createElement('span');
+    sample.className = 'sample-val';
+    sample.textContent = autoMap[field.key] ? String(rows[0]?.[autoMap[field.key]] ?? '').substring(0, 40) : '';
+
+    row.appendChild(label);
+    row.appendChild(select);
+    row.appendChild(sample);
+    container.appendChild(row);
+  }
+
+  $('#column-mapping').style.display = '';
+}
+
+function hideColumnMapping() {
+  $('#column-mapping').style.display = 'none';
+  $('#mapping-rows').innerHTML = '';
+}
+
+// ── Read user's column mapping from the UI ───────────────────────────────────
+function getUserColumnMap() {
+  const map = {};
+  document.querySelectorAll('#mapping-rows select').forEach(sel => {
+    if (sel.value) map[sel.dataset.field] = sel.value;
+  });
+  return map;
+}
 
 // ── Type normalisation (mirrors cadmus_qti_generator.py normalise_type) ──────
 function normaliseType(raw) {
@@ -1125,20 +1221,22 @@ function splitFibAnswers(ansList, nBlanks) {
 }
 
 // ── Excel multi-type parser ──────────────────────────────────────────────────
-function parseExcelAll(arrayBuffer) {
-  const wb = XLSX.read(arrayBuffer, { type: 'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-
+// customColMap: optional { internalKey: 'Excel Column Name' } override
+function parseExcelAll(rows, customColMap) {
   const result = { fib: [], mcq: [], matching: [], short: [] };
   if (!rows.length) return result;
 
-  // Map headers to internal keys
-  const rawHeaders = Object.keys(rows[0]);
-  const colMap = {};
-  for (const hdr of rawHeaders) {
-    const key = HEADER_MAP[hdr.toLowerCase().trim()];
-    if (key && !colMap[key]) colMap[key] = hdr;
+  // Use custom map if provided, otherwise auto-detect from HEADER_MAP
+  let colMap;
+  if (customColMap) {
+    colMap = customColMap;
+  } else {
+    const rawHeaders = Object.keys(rows[0]);
+    colMap = {};
+    for (const hdr of rawHeaders) {
+      const key = HEADER_MAP[hdr.toLowerCase().trim()];
+      if (key && !colMap[key]) colMap[key] = hdr;
+    }
   }
 
   for (const row of rows) {
@@ -1232,7 +1330,6 @@ function parseExcelAll(arrayBuffer) {
       result.mcq.push({
         prompt: questionText,
         choices,
-        points: 1,
         feedback: explanation || '',
         topic: get('topic') || '',
         bloom: get('bloom') || '',
@@ -1258,7 +1355,6 @@ function parseExcelAll(arrayBuffer) {
         result.matching.push({
           prompt: questionText,
           pairs,
-          points: 1,
           feedback: explanation || '',
           topic: get('topic') || '',
           bloom: get('bloom') || '',
@@ -1272,7 +1368,6 @@ function parseExcelAll(arrayBuffer) {
       result.short.push({
         prompt: questionText,
         answers: answers.length > 0 ? answers : [explanation || ''],
-        points: 1,
         feedback: explanation || '',
         topic: get('topic') || '',
         bloom: get('bloom') || '',
@@ -1603,6 +1698,9 @@ document.getElementById('import-file')?.addEventListener('change', (e) => {
   if (!file) {
     parsedByType = { fib: [], mcq: [], matching: [], short: [] };
     importFileName = '';
+    pendingExcelRows = null;
+    pendingExcelHeaders = [];
+    hideColumnMapping();
     updateImportUI();
     return;
   }
@@ -1612,7 +1710,9 @@ document.getElementById('import-file')?.addEventListener('change', (e) => {
   const ext = file.name.split('.').pop().toLowerCase();
 
   if (ext === 'xml') {
-    // QTI XML path
+    // QTI XML path — no column mapping needed
+    hideColumnMapping();
+    pendingExcelRows = null;
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
@@ -1628,23 +1728,55 @@ document.getElementById('import-file')?.addEventListener('change', (e) => {
     };
     reader.readAsText(file);
   } else if (ext === 'xlsx' || ext === 'xls') {
-    // Excel path
+    // Excel path — show column mapping first
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        parsedByType = parseExcelAll(ev.target.result);
-        updateImportUI();
-        const total = parsedByType.fib.length + parsedByType.mcq.length + parsedByType.matching.length + parsedByType.short.length;
-        log(`Parsed ${total} question(s) from ${file.name} (${parsedByType.fib.length} FIB, ${parsedByType.mcq.length} MCQ, ${parsedByType.matching.length} Matching, ${parsedByType.short.length} Short)`);
-      } catch (err) {
-        log(`Excel parse error: ${err.message}`, 'err');
+        const wb = XLSX.read(ev.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        if (!rows.length) {
+          log('Excel file has no data rows', 'warn');
+          return;
+        }
+        pendingExcelRows = rows;
+        pendingExcelHeaders = Object.keys(rows[0]);
+        showColumnMapping(pendingExcelHeaders, rows);
+        // Reset parsed data until mapping is confirmed
         parsedByType = { fib: [], mcq: [], matching: [], short: [] };
         updateImportUI();
+        log(`Loaded ${rows.length} row(s) from ${file.name} — verify column mapping below, then click "Apply Mapping & Parse"`);
+      } catch (err) {
+        log(`Excel read error: ${err.message}`, 'err');
       }
     };
     reader.readAsArrayBuffer(file);
   } else {
     log(`Unsupported file type: .${ext} (use .xml or .xlsx)`, 'err');
+  }
+});
+
+// ── Apply column mapping button ──────────────────────────────────────────────
+document.getElementById('btn-apply-mapping')?.addEventListener('click', () => {
+  if (!pendingExcelRows?.length) return;
+
+  const colMap = getUserColumnMap();
+
+  // Validate required fields
+  const missing = INTERNAL_FIELDS.filter(f => f.required && !colMap[f.key]);
+  if (missing.length) {
+    log(`Missing required mappings: ${missing.map(f => f.label).join(', ')}`, 'err');
+    return;
+  }
+
+  try {
+    parsedByType = parseExcelAll(pendingExcelRows, colMap);
+    updateImportUI();
+    const total = parsedByType.fib.length + parsedByType.mcq.length + parsedByType.matching.length + parsedByType.short.length;
+    log(`Parsed ${total} question(s) (${parsedByType.fib.length} FIB, ${parsedByType.mcq.length} MCQ, ${parsedByType.matching.length} Matching, ${parsedByType.short.length} Short)`);
+    hideColumnMapping();
+  } catch (err) {
+    log(`Parse error: ${err.message}`, 'err');
   }
 });
 
