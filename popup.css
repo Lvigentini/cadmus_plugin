@@ -388,6 +388,48 @@ label input[type="number"] {
   line-height: 1.6;
 }
 
+/* ── Export panel ── */
+.export-scope {
+  display: flex;
+  gap: 16px;
+  padding: 4px 0;
+}
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #555;
+  cursor: pointer;
+}
+.radio-label input[type="radio"] {
+  accent-color: #1a73e8;
+  margin: 0;
+}
+.export-progress {
+  font-size: 12px;
+  color: #1a73e8;
+  font-weight: 600;
+  padding: 4px 0;
+}
+.btn--export {
+  background: #1a73e8;
+  width: 100%;
+  justify-content: center;
+  padding: 12px 20px;
+  font-size: 15px;
+}
+.btn--export:hover { background: #1557b0; }
+label select {
+  flex: 1;
+  max-width: 200px;
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 14px;
+  background: #fff;
+}
+
 /* ── Log ── */
 .log {
   max-height: 260px;

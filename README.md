@@ -1,6 +1,6 @@
 # Cadmus Question Library Tools
 
-A Chrome extension that enhances the [Cadmus](https://cadmus.io) question library interface with streamlined bulk import from Excel and QTI XML, flexible column mapping, automatic tagging (topic, Bloom level, difficulty, filename), and batch editing of points, shuffle, and similarity settings across selected questions.
+A Chrome extension that enhances the [Cadmus](https://cadmus.io) question library interface with streamlined bulk import and export of questions, flexible column mapping, automatic tagging (topic, Bloom level, difficulty, filename), and batch editing of points, shuffle, and similarity settings across selected questions.
 
 ---
 
@@ -13,6 +13,7 @@ A Chrome extension that enhances the [Cadmus](https://cadmus.io) question librar
   - [Import Questions](#import-questions)
   - [Column Mapping](#column-mapping)
   - [Automatic Tagging](#automatic-tagging)
+  - [Export Questions](#export-questions)
   - [Bulk Edit](#bulk-edit)
   - [Delete](#delete)
 - [Excel Format](#excel-format)
@@ -35,9 +36,13 @@ A Chrome extension that enhances the [Cadmus](https://cadmus.io) question librar
 |:---:|:---:|
 | ![Import tab — empty state](docs/screenshot-import-tab.png) | ![Column mapping with tag checkboxes](docs/screenshot-column-mapping.png) |
 
-| Bulk Edit Tab | Delete Tab |
+| Export Tab | Bulk Edit Tab |
 |:---:|:---:|
-| ![Bulk Edit tab with MCQ options](docs/screenshot-bulk-edit-tab.png) | ![Delete tab with warning](docs/screenshot-delete-tab.png) |
+| ![Export tab with format selector](docs/screenshot-export-tab.png) | ![Bulk Edit tab with MCQ options](docs/screenshot-bulk-edit-tab.png) |
+
+| Delete Tab |
+|:---:|
+| ![Delete tab with warning](docs/screenshot-delete-tab.png) |
 
 ---
 
@@ -62,8 +67,12 @@ A Chrome extension that enhances the [Cadmus](https://cadmus.io) question librar
    3. Click **Apply Mapping & Parse**
    4. Expand type cards to adjust points, shuffle, similarity as needed
    5. Click **Import All Questions**
-4. **Bulk Edit** tab: select questions via the Cadmus library checkboxes → expand a type card → set options → click **Run**
-5. **Delete** tab: select questions → click **Delete Selected** (confirmation required)
+4. **Export** tab:
+   1. Choose a format (Excel, CSV, JSON, or QTI XML)
+   2. Select scope — "Selected questions" or "All questions in library"
+   3. Click **Export Questions** — the file downloads automatically
+5. **Bulk Edit** tab: select questions via the Cadmus library checkboxes → expand a type card → set options → click **Run**
+6. **Delete** tab: select questions → click **Delete Selected** (confirmation required)
 
 The log panel at the bottom shows real-time progress for all operations.
 
@@ -101,6 +110,19 @@ On import, the extension applies tags and metadata in batch:
 | **Filename** | From the imported file's name | `week01_mixedQs` |
 
 Tags are applied via the `AppendTagsForQuestions` mutation (additive — never removes existing tags). Difficulty is set via `UpdateQuestionAttributes`.
+
+### Export Questions
+
+Export questions from the library to four formats — choose between selected questions or the entire library:
+
+| Format | Extension | Use case |
+|--------|-----------|----------|
+| **Excel** | `.xlsx` | Re-import into another library, share with colleagues, review in a spreadsheet |
+| **CSV** | `.csv` | Open in any tool, import into other LMS platforms, data analysis |
+| **JSON** | `.json` | Programmatic access, backup, integration with other systems |
+| **QTI 1.2 XML** | `.xml` | Round-trip: export from one Cadmus library, re-import into another via this extension |
+
+Each export includes full question data fetched via GraphQL: prompt text, answer details (choices, matching pairs, correct values), feedback, difficulty, points, tags, and shuffle settings. Progress is shown in the log panel during export.
 
 ### Bulk Edit
 
@@ -234,7 +256,8 @@ After making changes to the source files:
 - **Page-context injection** — scripts run in `world: 'MAIN'` to access Cadmus React/Apollo internals
 - **GraphQL API** — communicates with `https://api.cadmus.io/cadmus/api/graphql`
 - **React Fiber traversal** — extracts TanStack table state for selected-row detection
-- **SheetJS** — bundled locally for browser-side Excel parsing (no CDN dependency)
+- **SheetJS** — bundled locally for browser-side Excel parsing and export (no CDN dependency)
+- **Multi-format export** — Excel via SheetJS, CSV/JSON/QTI XML via string builders; all formats use Blob + hidden anchor download
 
 ---
 

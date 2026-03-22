@@ -953,8 +953,123 @@ function cadmusAction(action, options) {
     return { success: failed === 0, processed: created, skipped: failed, logs };
   }
 
+  // --- Export questions ---
+  async function exportQuestions(opts) {
+    const { tenant, assessmentId } = parseCadmusUrl();
+    const hdrs = { 'x-cadmus-role': 'AUTHOR', 'x-cadmus-tenant': tenant, 'x-cadmus-assessment': assessmentId };
+
+    // Get rows based on scope
+    const table = findTanStackTable();
+    if (!table) return { error: 'Could not find table instance. Is the library loaded?' };
+
+    let rows;
+    if (opts.scope === 'all') {
+      // Get ALL rows from table (not just selected)
+      rows = table.getRowModel().rows;
+    } else {
+      rows = table.getSelectedRowModel().rows;
+    }
+    if (!rows.length) return { error: opts.scope === 'all' ? 'No questions in library' : 'No questions selected. Select rows using the checkboxes first.' };
+
+    const logs = [];
+    const questions = [];
+
+    // Fetch full data for each question via GraphQL
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const orig = row.original || {};
+      const qId = orig.id;
+
+      // Report progress back — the popup will display this
+      if (typeof opts._onProgress === 'function') opts._onProgress(i + 1, rows.length);
+
+      const fd = await gql(FETCH_Q, { questionId: qId }, hdrs);
+      if (fd.errors) {
+        logs.push({ msg: `Fetch failed for ${orig.shortPrompt?.substring(0, 40) || qId}`, cls: 'err' });
+        continue;
+      }
+
+      const q = fd.data.question;
+      const field = q.body?.fields?.[0];
+      const inter = field?.interaction;
+
+      // Extract plain text from ProseMirror JSON promptDoc
+      let promptText = q.shortPrompt || '';
+      try {
+        const doc = typeof q.body.promptDoc === 'string' ? JSON.parse(q.body.promptDoc) : q.body.promptDoc;
+        if (doc?.content) {
+          const texts = [];
+          const walk = (nodes) => {
+            for (const n of nodes) {
+              if (n.type === 'text' && n.text) texts.push(n.text);
+              else if (n.type === 'blankInline') texts.push('___');
+              else if (n.type === 'paragraph' && texts.length) texts.push('\n');
+              if (n.content) walk(n.content);
+            }
+          };
+          walk(doc.content);
+          promptText = texts.join('').trim() || promptText;
+        }
+      } catch (_) { /* keep shortPrompt */ }
+
+      // Build normalised question object
+      const qObj = {
+        index: i + 1,
+        id: q.id,
+        questionType: q.questionType,
+        prompt: promptText,
+        feedback: q.body?.feedback || '',
+        points: q.points ?? 1,
+        shuffle: q.shuffle ?? false,
+        difficulty: orig.difficulty || '',
+        tags: (orig.tags || []).map(t => typeof t === 'string' ? t : (t.name || '')),
+        // Scoring
+        correctValues: field?.response?.correctValues || [],
+        matchSimilarity: field?.response?.matchSimilarity,
+        caseSensitive: field?.response?.caseSensitive,
+      };
+
+      // Type-specific data
+      if (inter?.__typename === 'ChoiceInteraction') {
+        qObj.choices = (inter.choices || []).map(c => ({
+          identifier: c.identifier,
+          text: c.content,
+          correct: (field.response?.correctValues || []).includes(c.identifier),
+        }));
+        qObj.maxChoices = inter.maxChoices;
+      } else if (inter?.__typename === 'MatchInteraction') {
+        qObj.sourceSet = (inter.sourceSet || []).map(s => ({ identifier: s.identifier, content: s.content }));
+        qObj.targetSet = (inter.targetSet || []).map(t => ({ identifier: t.identifier, content: t.content }));
+        // Build pairs from correctValues — format is "sourceId targetId"
+        qObj.pairs = [];
+        for (const cv of (field.response?.correctValues || [])) {
+          const parts = cv.split(' ');
+          if (parts.length === 2) {
+            const src = qObj.sourceSet.find(s => s.identifier === parts[0]);
+            const tgt = qObj.targetSet.find(t => t.identifier === parts[1]);
+            if (src && tgt) qObj.pairs.push({ left: src.content, right: tgt.content });
+          }
+        }
+      } else if (inter?.__typename === 'TextEntryInteraction') {
+        qObj.expectedLength = inter.expectedLength;
+        qObj.attachmentEnabled = inter.attachmentEnabled;
+      }
+
+      questions.push(qObj);
+    }
+
+    logs.push({ msg: `Fetched ${questions.length} of ${rows.length} question(s)`, cls: 'ok' });
+    return {
+      success: true,
+      questions,
+      source: window.location.href,
+      exportedAt: new Date().toISOString(),
+      logs,
+    };
+  }
+
   // --- Dispatch ---
-  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort };
+  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions };
   return actions[action](options);
 }
 
@@ -1633,6 +1748,168 @@ function updateImportUI() {
   if (importAllBtn) importAllBtn.disabled = total === 0;
 }
 
+// ── Export format converters ─────────────────────────────────────────────────
+
+function formatAnswerDetails(q) {
+  switch (q.questionType) {
+    case 'MCQ':
+      if (!q.choices?.length) return '';
+      return q.choices.map((c, i) => {
+        const label = String.fromCharCode(65 + i);
+        return `${label}. ${c.text}${c.correct ? ' \u2713' : ''}`;
+      }).join('\n');
+    case 'MATCHING':
+      if (!q.pairs?.length) return '';
+      return q.pairs.map(p => `${p.left} \u2192 ${p.right}`).join('\n');
+    case 'BLANKS':
+      return (q.correctValues || []).join('; ');
+    case 'SHORT':
+      return (q.correctValues || []).join('; ');
+    default:
+      return (q.correctValues || []).join('; ');
+  }
+}
+
+function exportToExcel(data) {
+  const headers = ['#', 'Type', 'Question', 'Answer / Details', 'Explanation', 'Difficulty', 'Points', 'Tags'];
+  const rows = [headers];
+  for (const q of data.questions) {
+    rows.push([
+      q.index,
+      q.questionType,
+      q.prompt,
+      formatAnswerDetails(q),
+      q.feedback || '',
+      q.difficulty || '',
+      q.points ?? '',
+      (q.tags || []).join(', '),
+    ]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 4 }, { wch: 12 }, { wch: 60 }, { wch: 45 }, { wch: 40 }, { wch: 10 }, { wch: 7 }, { wch: 25 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Questions');
+  return XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+}
+
+function exportToCsv(data) {
+  const esc = (v) => {
+    const s = String(v ?? '').replace(/"/g, '""');
+    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s}"` : s;
+  };
+  const headers = ['#', 'Type', 'Question', 'Answer / Details', 'Explanation', 'Difficulty', 'Points', 'Tags'];
+  const lines = [headers.map(esc).join(',')];
+  for (const q of data.questions) {
+    lines.push([
+      q.index,
+      q.questionType,
+      q.prompt,
+      formatAnswerDetails(q),
+      q.feedback || '',
+      q.difficulty || '',
+      q.points ?? '',
+      (q.tags || []).join('; '),
+    ].map(esc).join(','));
+  }
+  return lines.join('\r\n');
+}
+
+function exportToJson(data) {
+  return JSON.stringify({
+    exportedAt: data.exportedAt,
+    exportVersion: '2.0',
+    source: data.source,
+    totalQuestions: data.questions.length,
+    questions: data.questions,
+  }, null, 2);
+}
+
+function exportToQti(data) {
+  const escXml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  function choiceItem(q) {
+    const ident = `q_${q.index}`;
+    const choices = (q.choices || []).map((c, i) => {
+      const cid = String.fromCharCode(65 + i);
+      return `        <response_label ident="${cid}"><flow_mat><material><mattext texttype="text/html">${escXml(c.text)}</mattext></material></flow_mat></response_label>`;
+    }).join('\n');
+    const correctIds = (q.choices || []).filter(c => c.correct).map((_, i) => String.fromCharCode(65 + i));
+    const cardinality = correctIds.length > 1 ? 'Multiple' : 'Single';
+    const respConditions = correctIds.map(cid =>
+      `      <respcondition title="correct"><conditionvar><varequal respident="response" case="No">${cid}</varequal></conditionvar><setvar variablename="SCORE" action="Set">SCORE.max</setvar></respcondition>`
+    ).join('\n');
+
+    return `  <item ident="${ident}" maxattempts="0">
+    <itemmetadata><bbmd_asi_object_id>${ident}</bbmd_asi_object_id><bbmd_questiontype>Multiple Choice</bbmd_questiontype><qmd_absolutescore_max>${q.points ?? 1}</qmd_absolutescore_max></itemmetadata>
+    <presentation><flow class="Block"><flow class="QUESTION_BLOCK"><flow class="FORMATTED_TEXT_BLOCK"><material><mattext texttype="text/html">${escXml(q.prompt)}</mattext></material></flow></flow>
+      <flow class="RESPONSE_BLOCK"><response_lid ident="response" rcardinality="${cardinality}" rtiming="No"><render_choice shuffle="No" minnumber="0" maxnumber="0">
+${choices}
+      </render_choice></response_lid></flow>
+    </flow></presentation>
+    <resprocessing scoremodel="SumOfScores"><outcomes><decvar varname="SCORE" vartype="Integer" defaultval="0" minvalue="0" maxvalue="${q.points ?? 1}"/></outcomes>
+${respConditions}
+      <respcondition title="incorrect"><conditionvar><other/></conditionvar><setvar variablename="SCORE" action="Set">0</setvar></respcondition>
+    </resprocessing>
+    ${q.feedback ? `<itemfeedback ident="correct" view="All"><flow_mat><material><mattext texttype="text/html">${escXml(q.feedback)}</mattext></material></flow_mat></itemfeedback>` : ''}
+  </item>`;
+  }
+
+  function fibItem(q) {
+    const ident = `q_${q.index}`;
+    const answers = q.correctValues || [];
+    const respConditions = answers.map(a =>
+      `      <respcondition><conditionvar><varequal respident="response" case="No">${escXml(a)}</varequal></conditionvar><setvar variablename="SCORE" action="Set">SCORE.max</setvar></respcondition>`
+    ).join('\n');
+    const typeLabel = q.questionType === 'MATCHING' ? 'Short Response' : 'Short Response';
+
+    // For matching, embed pairs in the prompt
+    let fullPrompt = q.prompt;
+    if (q.questionType === 'MATCHING' && q.pairs?.length) {
+      fullPrompt += '\n\nMatch the following:\n' + q.pairs.map(p => `${p.left} \u2192 ${p.right}`).join('\n');
+    }
+
+    return `  <item ident="${ident}" maxattempts="0">
+    <itemmetadata><bbmd_asi_object_id>${ident}</bbmd_asi_object_id><bbmd_questiontype>${typeLabel}</bbmd_questiontype><qmd_absolutescore_max>${q.points ?? 1}</qmd_absolutescore_max></itemmetadata>
+    <presentation><flow class="Block"><flow class="QUESTION_BLOCK"><flow class="FORMATTED_TEXT_BLOCK"><material><mattext texttype="text/html">${escXml(fullPrompt)}</mattext></material></flow></flow>
+      <flow class="RESPONSE_BLOCK"><response_str ident="response" rcardinality="Single" rtiming="No"><render_fib><response_label ident="answer1"/></render_fib></response_str></flow>
+    </flow></presentation>
+    <resprocessing scoremodel="SumOfScores"><outcomes><decvar varname="SCORE" vartype="Integer" defaultval="0" minvalue="0" maxvalue="${q.points ?? 1}"/></outcomes>
+${respConditions}
+      <respcondition title="incorrect"><conditionvar><other/></conditionvar><setvar variablename="SCORE" action="Set">0</setvar></respcondition>
+    </resprocessing>
+    ${q.feedback ? `<itemfeedback ident="correct" view="All"><flow_mat><material><mattext texttype="text/html">${escXml(q.feedback)}</mattext></material></flow_mat></itemfeedback>` : ''}
+  </item>`;
+  }
+
+  const items = data.questions.map(q => {
+    if (q.questionType === 'MCQ') return choiceItem(q);
+    return fibItem(q);
+  }).join('\n\n');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<questestinterop xmlns="http://www.imsglobal.org/xsd/ims_qtiasiv1p2">
+  <assessment ident="cadmus_export" title="Cadmus Question Export">
+    <section ident="root_section">
+${items}
+    </section>
+  </assessment>
+</questestinterop>`;
+}
+
+function downloadFile(content, filename, mimeType) {
+  const blob = content instanceof ArrayBuffer || content instanceof Uint8Array
+    ? new Blob([content], { type: mimeType })
+    : new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ── Tab switching ────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach(t2 => t2.classList.remove('active'));
@@ -1776,6 +2053,65 @@ document.addEventListener('click', (e) => {
     case 'deleteSelected':
       if (!confirm('Delete all selected questions? This cannot be undone.')) return;
       break;
+    case 'exportQuestions':
+      // Export flow: fetch data in page context → convert in popup context → download
+      (async () => {
+        document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        const fmt = $('#export-format').value;
+        const scope = document.querySelector('input[name="export-scope"]:checked')?.value || 'selected';
+        const progress = $('#export-progress');
+        if (progress) { progress.style.display = 'block'; progress.textContent = 'Fetching question data\u2026'; }
+        log(`Exporting ${scope} questions as ${fmt.toUpperCase()}\u2026`);
+
+        const result = await runAction('exportQuestions', { scope });
+        if (progress) progress.style.display = 'none';
+
+        if (!result || result.error) {
+          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+          return; // runAction already logged the error
+        }
+
+        const data = result;
+        if (!data.questions?.length) {
+          log('No questions to export', 'err');
+          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+          return;
+        }
+
+        // Build filename
+        const ts = new Date().toISOString().slice(0, 10);
+        const baseName = `cadmus_export_${ts}`;
+
+        try {
+          switch (fmt) {
+            case 'xlsx': {
+              const buf = exportToExcel(data);
+              downloadFile(buf, `${baseName}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+              break;
+            }
+            case 'csv': {
+              const csv = exportToCsv(data);
+              downloadFile(csv, `${baseName}.csv`, 'text/csv');
+              break;
+            }
+            case 'json': {
+              const json = exportToJson(data);
+              downloadFile(json, `${baseName}.json`, 'application/json');
+              break;
+            }
+            case 'qti': {
+              const xml = exportToQti(data);
+              downloadFile(xml, `${baseName}.xml`, 'application/xml');
+              break;
+            }
+          }
+          log(`Exported ${data.questions.length} question(s) as ${baseName}.${fmt === 'qti' ? 'xml' : fmt}`, 'ok');
+        } catch (err) {
+          log(`Export failed: ${err.message}`, 'err');
+        }
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      })();
+      return;
     case 'importAll':
       // Run all non-empty types sequentially
       (async () => {
