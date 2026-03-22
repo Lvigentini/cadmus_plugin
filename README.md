@@ -113,7 +113,7 @@ Tags are applied via the `AppendTagsForQuestions` mutation (additive — never r
 
 ### Export Questions
 
-Export questions from the library to four formats — choose between selected questions or the entire library:
+Export questions from the library to four formats — choose between **selected questions** or the **entire library**:
 
 | Format | Extension | Use case |
 |--------|-----------|----------|
@@ -122,7 +122,59 @@ Export questions from the library to four formats — choose between selected qu
 | **JSON** | `.json` | Programmatic access, backup, integration with other systems |
 | **QTI 1.2 XML** | `.xml` | Round-trip: export from one Cadmus library, re-import into another via this extension |
 
-Each export includes full question data fetched via GraphQL: prompt text, answer details (choices, matching pairs, correct values), feedback, difficulty, points, tags, and shuffle settings. Progress is shown in the log panel during export.
+Each export fetches full question data via GraphQL, including prompt text, answer details, feedback, difficulty, points, tags, and shuffle settings. Progress is shown in the log panel during export.
+
+#### Export columns (Excel and CSV)
+
+| Column | Description |
+|--------|-------------|
+| `#` | Sequential index |
+| `Type` | `MCQ`, `MATCHING`, `SHORT`, or `BLANKS` |
+| `Question` | Full prompt text extracted from ProseMirror JSON (blanks shown as `___`) |
+| `Answer / Details` | Type-specific answer formatting (see below) |
+| `Explanation` | Feedback / rationale text |
+| `Difficulty` | `EASY`, `MEDIUM`, or `HARD` |
+| `Points` | Numeric score value |
+| `Tags` | Comma-separated tag names |
+
+#### Answer formatting by type
+
+| Type | Format in Answer / Details column |
+|------|-----------------------------------|
+| **MCQ** | Lettered options with checkmark on correct: `A. Option one ✓` / `B. Option two` / `C. Option three` |
+| **Matching** | Arrow-separated pairs per line: `Term → Definition` |
+| **Fill-in-Blank** | Semicolon-separated accepted answers: `nephron; urine` |
+| **Short Answer** | Semicolon-separated key terms: `cushioning; buoyancy` |
+
+#### JSON structure
+
+The JSON export wraps questions in a metadata envelope:
+
+```json
+{
+  "exportedAt": "2026-03-23T...",
+  "exportVersion": "2.0",
+  "source": "https://teach.cadmus.io/{tenant}/assessment/{id}/library",
+  "totalQuestions": 45,
+  "questions": [
+    {
+      "index": 1,
+      "id": "uuid",
+      "questionType": "MCQ",
+      "prompt": "Which structure...",
+      "choices": [{ "text": "Nephron", "correct": true }, ...],
+      "feedback": "The nephron is...",
+      "points": 1,
+      "difficulty": "MEDIUM",
+      "tags": ["anatomy", "bloom-apply"]
+    }
+  ]
+}
+```
+
+#### QTI 1.2 XML round-trip
+
+The QTI export produces Blackboard-flavoured QTI 1.2 XML that can be re-imported via the **Import** tab. MCQ questions export as `render_choice` items with scored response conditions; all other types export as `render_fib` (short response) items. Matching pairs are embedded in the prompt text using arrow notation.
 
 ### Bulk Edit
 
@@ -264,6 +316,8 @@ After making changes to the source files:
 ## Author
 
 **Lorenzo Vigentini** — [lorenzo@cogentixai.com](mailto:lorenzo@cogentixai.com)
+
+This project was proudly co-authored with AI. **Claude** (Anthropic) contributed as a development partner throughout, assisting with code review and quality assurance, UI/UX design recommendations, security checking of GraphQL mutations and injected scripts, documentation structure and technical writing, and assessment design rationale grounded in educational measurement literature.
 
 ## License
 
