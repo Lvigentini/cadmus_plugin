@@ -1499,7 +1499,13 @@ function showColumnMapping(headers, rows) {
   tagGrid.className = 'mapping-tag-grid';
   tagGrid.id = 'mapping-tag-checkboxes';
 
+  // Columns already mapped to internal fields — no point showing as tag options
+  const mappedCols = new Set(Object.values(autoMap).map(v => v.toLowerCase().trim()));
+
   for (const hdr of headers) {
+    // Skip columns that are already mapped to internal fields (#, Type, Question, etc.)
+    if (mappedCols.has(hdr.toLowerCase().trim())) continue;
+
     const lbl = document.createElement('label');
     lbl.className = 'mapping-tag-item';
 
