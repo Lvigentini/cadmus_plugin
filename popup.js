@@ -914,21 +914,21 @@ function cadmusAction(action, options) {
       const shortPrompt = q.prompt.substring(0, 200);
       const promptDoc = simplePromptDoc(q.prompt);
 
-      // Build source and target sets (correct pairs)
-      // No explicit distractors needed — in matching questions all targets
-      // are visible to students at once, so each target naturally serves
-      // as a distractor for every other prompt
+      // Cadmus matching data model (confirmed from manual question export):
+      //   sourceSet = RIGHT side (answers/options), identifiers: right_N
+      //   targetSet = LEFT side (prompts/scenarios), identifiers: left_N
+      //   correctValues = ["left_1 right_1", "left_2 right_2", ...]
       const sourceSet = q.pairs.map((p, i) => ({
-        identifier: `source_${nanoid(8)}`,
-        content: p.left,
-      }));
-      const targetSet = q.pairs.map((p, i) => ({
-        identifier: `target_${nanoid(8)}`,
+        identifier: `right_${i + 1}`,
         content: p.right,
       }));
+      const targetSet = q.pairs.map((p, i) => ({
+        identifier: `left_${i + 1}`,
+        content: p.left,
+      }));
 
-      // correctValues: space-separated "sourceId targetId" pairs
-      const correctValues = sourceSet.map((s, i) => `${s.identifier} ${targetSet[i].identifier}`);
+      // correctValues: "leftId rightId" pairs
+      const correctValues = targetSet.map((t, i) => `${t.identifier} ${sourceSet[i].identifier}`);
 
       const totalPoints = opts.points * q.pairs.length;
 
@@ -957,85 +957,24 @@ function cadmusAction(action, options) {
       if (resolution === 'update') {
         const existing = findExistingQuestion(libIndex, 'MATCHING', q.prompt);
         if (existing) {
-          const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
-          if (fd.errors) { logs.push({ msg: `Matching Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
-          const eq = fd.data.question;
-          const eqField = eq.body?.fields?.[0];
-          const eqInter = eqField?.interaction;
-          const eqCv = eqField?.response?.correctValues || [];
-
-          // ── STEP 1: Strip distractors from the existing question ──
-          // Identify which existing targets are correct (referenced in correctValues)
-          const correctTargetIds = new Set();
-          for (const cv of eqCv) {
-            const parts = cv.split(' ');
-            if (parts.length === 2) correctTargetIds.add(parts[1]);
-          }
-          // If correctValues are broken (bare IDs), use positional matching
-          if (correctTargetIds.size === 0 && eqInter?.sourceSet?.length) {
-            eqInter.sourceSet.forEach((_, i) => {
-              if (eqInter.targetSet[i]) correctTargetIds.add(eqInter.targetSet[i].identifier);
-            });
-          }
-
-          const hasDistractors = (eqInter?.targetSet || []).some(t => !correctTargetIds.has(t.identifier));
-          if (hasDistractors) {
-            // First update: keep existing correct pairs, just remove distractors
-            const cleanTargets = (eqInter?.targetSet || []).filter(t => correctTargetIds.has(t.identifier));
-            const cleanCv = (eqInter?.sourceSet || []).map((s, i) => {
-              const t = cleanTargets[i];
-              return t ? `${s.identifier} ${t.identifier}` : null;
-            }).filter(Boolean);
-
-            const stripInput = {
-              id: eq.id,
-              attributes: {
-                promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
-                feedback: eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
-                points: eq.points, shuffle: eq.shuffle,
-                fields: [{
-                  identifier: eqField.identifier,
-                  response: {
-                    partialScoring: eqField.response.partialScoring, matchSimilarity: null,
-                    correctValues: cleanCv,
-                    correctRanges: [], correctAreas: [], caseSensitive: eqField.response.caseSensitive, errorMargin: null, baseType: null,
-                  },
-                  matchInteraction: {
-                    sourceSet: (eqInter?.sourceSet || []).map(s => ({ identifier: s.identifier, content: s.content })),
-                    targetSet: cleanTargets.map(t => ({ identifier: t.identifier, content: t.content })),
-                  },
-                }],
-              },
-            };
-            const stripRes = await gql(UPDATE_Q, { input: stripInput, childrenQuestions: [] }, hdrs);
-            if (stripRes.errors) {
-              logs.push({ msg: `Matching Q${idx + 1} strip distractors failed: ${stripRes.errors[0].message}`, cls: 'err' });
-              failed++;
-              continue;
-            }
-            logs.push({ msg: `Matching Q${idx + 1} — stripped ${(eqInter?.targetSet || []).length - cleanTargets.length} distractor(s)`, cls: 'ok' });
-          }
-
-          // ── STEP 2: Re-fetch the cleaned question and apply new answer data ──
-          const fd2 = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
-          if (fd2.errors) { logs.push({ msg: `Matching Q${idx + 1} re-fetch failed`, cls: 'err' }); failed++; continue; }
-          const eq2 = fd2.data.question;
-          const eq2Field = eq2.body?.fields?.[0];
-          const eq2Inter = eq2Field?.interaction;
-
-          // Build new source/target sets reusing existing IDs where possible
+          // For updates: just replace with correct data model in one step
+          // Cadmus model: sourceSet=answers(right_N), targetSet=prompts(left_N)
           const updSourceSet = q.pairs.map((p, pi) => ({
-            identifier: eq2Inter?.sourceSet?.[pi]?.identifier || `source_${nanoid(8)}`,
-            content: p.left,
-          }));
-          const updTargetSet = q.pairs.map((p, pi) => ({
-            identifier: eq2Inter?.targetSet?.[pi]?.identifier || `target_${nanoid(8)}`,
+            identifier: `right_${pi + 1}`,
             content: p.right,
           }));
-          const updCorrectValues = updSourceSet.map((s, pi) => `${s.identifier} ${updTargetSet[pi].identifier}`);
+          const updTargetSet = q.pairs.map((p, pi) => ({
+            identifier: `left_${pi + 1}`,
+            content: p.left,
+          }));
+          const updCorrectValues = updTargetSet.map((t, pi) => `${t.identifier} ${updSourceSet[pi].identifier}`);
+
+          const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+          if (fd.errors) { logs.push({ msg: `Matching Q${idx + 1} fetch failed`, cls: 'err' }); failed++; continue; }
+          const eq = fd.data.question;
 
           const updFields = [{
-            identifier: eq2Field?.identifier || '1',
+            identifier: eq.body?.fields?.[0]?.identifier || '1',
             response: {
               partialScoring: null, matchSimilarity: null,
               correctValues: updCorrectValues,
@@ -1048,18 +987,18 @@ function cadmusAction(action, options) {
           }];
 
           const input = {
-            id: eq2.id,
+            id: eq.id,
             attributes: {
-              promptDoc: eq2.body.promptDoc, questionType: eq2.questionType, shortPrompt: eq2.shortPrompt,
-              feedback: q.feedback || eq2.body.feedback, promptImage: null, parentQuestionId: eq2.parentQuestionId,
+              promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+              feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
               points: totalPoints, shuffle: opts.shuffle, fields: updFields,
             },
           };
           const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
           if (ud.errors) { logs.push({ msg: `Matching Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
           else {
-            createdIds.push({ id: eq2.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-            logs.push({ msg: `Matching Q${idx + 1} updated — ${eq2.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs)`, cls: 'ok' });
+            createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+            logs.push({ msg: `Matching Q${idx + 1} updated — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs)`, cls: 'ok' });
             updated++;
           }
           continue;
@@ -1231,7 +1170,9 @@ function cadmusAction(action, options) {
     return { success: failed === 0, processed: created + updated, skipped: failed, logs };
   }
 
-  // --- Fix Matching Questions (diagnostic: strip distractors only) ---
+  // --- Fix Matching Questions — rebuild with correct Cadmus data model ---
+  // Cadmus model: sourceSet = answers (right_N), targetSet = prompts (left_N)
+  // correctValues = ["left_1 right_1", "left_2 right_2", ...]
   async function fixMatchingQuestions(opts) {
     const { tenant, assessmentId } = parseCadmusUrl();
     const hdrs = { 'x-cadmus-role': 'AUTHOR', 'x-cadmus-tenant': tenant, 'x-cadmus-assessment': assessmentId };
@@ -1251,13 +1192,10 @@ function cadmusAction(action, options) {
     const logs = [];
     let fixed = 0, skipped = 0, failed = 0;
 
-    const maxToProcess = Math.min(rows.length, 3); // diagnostic: limit to first 3
-    logs.push({ msg: `Processing ${maxToProcess} of ${rows.length} matching questions (diagnostic limit)`, cls: 'warn' });
-    for (let ri = 0; ri < maxToProcess; ri++) {
+    for (let ri = 0; ri < rows.length; ri++) {
       const qId = rows[ri].original.id;
-      const label = rows[ri].original.shortPrompt?.substring(0, 40) || qId;
+      const label = rows[ri].original.shortPrompt?.substring(0, 50) || qId;
 
-      // Fetch full question data
       const fd = await gql(FETCH_Q, { questionId: qId }, hdrs);
       if (fd.errors) { logs.push({ msg: `Fetch failed: ${label}`, cls: 'err' }); failed++; continue; }
 
@@ -1268,66 +1206,39 @@ function cadmusAction(action, options) {
         logs.push({ msg: `${label} — no match interaction, skipped`, cls: 'warn' }); skipped++; continue;
       }
 
-      const sources = inter.sourceSet;
-      const targets = inter.targetSet;
+      const oldSources = inter.sourceSet;
+      const oldTargets = inter.targetSet;
       const cv = field.response?.correctValues || [];
 
-      // Diagnostic: log exactly what we see
-      logs.push({ msg: `${label}: ${sources.length} sources, ${targets.length} targets, ${cv.length} correctValues`, cls: 'warn' });
-      if (cv.length > 0) {
-        logs.push({ msg: `  correctValues[0]: "${cv[0]}" (has space: ${cv[0].includes(' ')})`, cls: 'warn' });
-      }
+      // Check if already using correct model (sourceSet has right_* IDs)
+      const alreadyCorrect = oldSources.length > 0
+        && oldSources[0].identifier.startsWith('right_')
+        && oldTargets[0].identifier.startsWith('left_')
+        && cv.length > 0
+        && cv[0].startsWith('left_');
 
-      // Targets = sources means no distractors (1:1 mapping)
-      if (targets.length <= sources.length) {
-        // Just fix correctValues if needed
-        const needsRepair = cv.length === 0 || cv.some(v => !v.includes(' '));
-        if (!needsRepair) {
-          logs.push({ msg: `  → already clean (${sources.length}:${targets.length}), skipped`, cls: 'ok' }); skipped++; continue;
-        }
-        // Repair correctValues only
-        const repairedCv = sources.map((s, i) => {
-          const t = targets[i];
-          return t ? `${s.identifier} ${t.identifier}` : null;
-        }).filter(Boolean);
-
-        const input = {
-          id: q.id,
-          attributes: {
-            promptDoc: q.body.promptDoc, questionType: q.questionType, shortPrompt: q.shortPrompt,
-            feedback: q.body.feedback, promptImage: null, parentQuestionId: q.parentQuestionId,
-            points: q.points, shuffle: q.shuffle,
-            fields: [{
-              identifier: field.identifier,
-              response: {
-                partialScoring: field.response.partialScoring, matchSimilarity: null,
-                correctValues: repairedCv,
-                correctRanges: [], correctAreas: [], caseSensitive: field.response.caseSensitive, errorMargin: null, baseType: null,
-              },
-              matchInteraction: {
-                sourceSet: sources.map(s => ({ identifier: s.identifier, content: s.content })),
-                targetSet: targets.map(t => ({ identifier: t.identifier, content: t.content })),
-              },
-            }],
-          },
-        };
-        const res = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
-        if (res.errors) { logs.push({ msg: `  → repair failed: ${res.errors[0].message}`, cls: 'err' }); failed++; }
-        else { logs.push({ msg: `  → repaired correctValues (${repairedCv.length} pairs)`, cls: 'ok' }); fixed++; }
+      if (alreadyCorrect) {
+        logs.push({ msg: `${label} — already correct model, skipped`, cls: 'ok' });
+        skipped++;
         continue;
       }
 
-      // targets.length > sources.length → has distractors
-      const distractorCount = targets.length - sources.length;
-      logs.push({ msg: `  → ${distractorCount} distractor(s) to remove`, cls: 'warn' });
+      // Detect the broken structure:
+      // Old import put: sourceSet = prompts (left), targetSet = answers (right)
+      // We need to rebuild with: sourceSet = answers (right_N), targetSet = prompts (left_N)
+      // The number of actual pairs = oldSources.length (prompts)
+      // Extra items in oldTargets beyond that count are distractors
+      const pairCount = oldSources.length;
+      logs.push({ msg: `${label}: ${pairCount} pairs, ${oldTargets.length} old targets (${oldTargets.length - pairCount} extra)`, cls: 'warn' });
 
-      // Keep only the first N targets (matching source count) — these are the correct ones
-      // Distractors were appended after the correct targets during import
-      const cleanTargets = targets.slice(0, sources.length);
-      const cleanCv = sources.map((s, i) => `${s.identifier} ${cleanTargets[i].identifier}`);
-
-      logs.push({ msg: `  → keeping ${cleanTargets.length} targets, removing ${distractorCount}`, cls: 'warn' });
-      logs.push({ msg: `  → new correctValues[0]: "${cleanCv[0]}"`, cls: 'warn' });
+      // Rebuild: prompts are in oldSources, answers are in first N of oldTargets
+      const newSourceSet = [];  // answers → right_N
+      const newTargetSet = [];  // prompts → left_N
+      for (let i = 0; i < pairCount; i++) {
+        newTargetSet.push({ identifier: `left_${i + 1}`, content: oldSources[i].content });
+        newSourceSet.push({ identifier: `right_${i + 1}`, content: oldTargets[i]?.content || '' });
+      }
+      const newCv = newTargetSet.map((t, i) => `${t.identifier} ${newSourceSet[i].identifier}`);
 
       const input = {
         id: q.id,
@@ -1339,45 +1250,24 @@ function cadmusAction(action, options) {
             identifier: field.identifier,
             response: {
               partialScoring: field.response.partialScoring, matchSimilarity: null,
-              correctValues: cleanCv,
+              correctValues: newCv,
               correctRanges: [], correctAreas: [], caseSensitive: field.response.caseSensitive, errorMargin: null, baseType: null,
             },
             matchInteraction: {
-              sourceSet: sources.map(s => ({ identifier: s.identifier, content: s.content })),
-              targetSet: cleanTargets.map(t => ({ identifier: t.identifier, content: t.content })),
+              sourceSet: newSourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
+              targetSet: newTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
             },
           }],
         },
       };
 
-      // Log exactly what we're sending
-      logs.push({ msg: `  → sending: ${cleanTargets.length} targets in targetSet, ${cleanCv.length} correctValues`, cls: 'warn' });
-
       const res = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
       if (res.errors) {
-        logs.push({ msg: `  → UPDATE FAILED: ${res.errors[0].message}`, cls: 'err' });
-        logs.push({ msg: `  → Full error: ${JSON.stringify(res.errors).substring(0, 500)}`, cls: 'err' });
+        logs.push({ msg: `  → FAILED: ${res.errors[0].message}`, cls: 'err' });
         failed++;
       } else {
-        logs.push({ msg: `  → UPDATE returned OK`, cls: 'ok' });
-
-        // Verify: re-fetch and check if targets actually changed
-        const verify = await gql(FETCH_Q, { questionId: qId }, hdrs);
-        if (verify.errors) {
-          logs.push({ msg: `  → verify fetch failed`, cls: 'err' });
-        } else {
-          const vInter = verify.data.question.body?.fields?.[0]?.interaction;
-          const vCv = verify.data.question.body?.fields?.[0]?.response?.correctValues || [];
-          const afterTargets = vInter?.targetSet?.length || 0;
-          const afterSources = vInter?.sourceSet?.length || 0;
-          if (afterTargets > afterSources) {
-            logs.push({ msg: `  → VERIFY FAILED: still ${afterTargets} targets (expected ${afterSources}) — Cadmus did not remove distractors`, cls: 'err' });
-            failed++;
-          } else {
-            logs.push({ msg: `  → VERIFIED: ${afterSources} sources, ${afterTargets} targets, ${vCv.length} correctValues ✓`, cls: 'ok' });
-            fixed++;
-          }
-        }
+        logs.push({ msg: `  → fixed: ${pairCount} pairs, ${newCv.length} correctValues, ${oldTargets.length - pairCount} distractors removed`, cls: 'ok' });
+        fixed++;
       }
     }
 
@@ -1473,14 +1363,15 @@ function cadmusAction(action, options) {
       } else if (inter?.__typename === 'MatchInteraction') {
         qObj.sourceSet = (inter.sourceSet || []).map(s => ({ identifier: s.identifier, content: s.content }));
         qObj.targetSet = (inter.targetSet || []).map(t => ({ identifier: t.identifier, content: t.content }));
-        // Build pairs from correctValues — format is "sourceId targetId"
+        // Build pairs from correctValues — format is "leftId rightId"
+        // sourceSet = right side (answers), targetSet = left side (prompts)
         qObj.pairs = [];
         for (const cv of (field.response?.correctValues || [])) {
           const parts = cv.split(' ');
           if (parts.length === 2) {
-            const src = qObj.sourceSet.find(s => s.identifier === parts[0]);
-            const tgt = qObj.targetSet.find(t => t.identifier === parts[1]);
-            if (src && tgt) qObj.pairs.push({ left: src.content, right: tgt.content });
+            const leftItem = qObj.targetSet.find(t => t.identifier === parts[0]);
+            const rightItem = qObj.sourceSet.find(s => s.identifier === parts[1]);
+            if (leftItem && rightItem) qObj.pairs.push({ left: leftItem.content, right: rightItem.content });
           }
         }
       } else if (inter?.__typename === 'TextEntryInteraction') {
