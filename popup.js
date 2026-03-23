@@ -56,15 +56,15 @@ function setDisconnected(msg) {
 }
 
 // ── Run action in page context ───────────────────────────────────────────────
-async function runAction(action, options) {
+async function runAction(action, options, { silent = false } = {}) {
   if (!cadmusTabId) {
     log('No Cadmus tab found — refresh and try again', 'err');
-    return;
+    return null;
   }
 
   // Disable all buttons while running
   document.querySelectorAll('.btn').forEach(b => b.disabled = true);
-  log(`Running ${action}…`);
+  if (!silent) log(`Running ${action}…`);
 
   try {
     const results = await chrome.scripting.executeScript({
@@ -77,21 +77,23 @@ async function runAction(action, options) {
     const result = results[0]?.result;
     if (!result) {
       log('No result returned', 'err');
-      return;
+      return null;
     }
     if (result.error) {
       log(result.error, 'err');
-      return;
+      return result;
     }
     // Show per-item logs
-    if (result.logs) {
+    if (!silent && result.logs) {
       result.logs.forEach(l => log(l.msg, l.cls));
     }
-    if (result.success) {
+    if (!silent && result.success) {
       log(`Done — ${result.processed} processed, ${result.skipped} skipped`, 'ok');
     }
+    return result;
   } catch (err) {
     log(`Error: ${err.message}`, 'err');
+    return null;
   } finally {
     document.querySelectorAll('.btn').forEach(b => b.disabled = false);
   }
@@ -2569,7 +2571,7 @@ document.addEventListener('click', (e) => {
         for (const q of parsedByType.matching)  scanList.push({ globalIdx: globalIdx++, type: 'MATCHING', prompt: q.prompt });
         for (const q of parsedByType.short)     scanList.push({ globalIdx: globalIdx++, type: 'SHORT', prompt: q.prompt });
 
-        const scanResult = await runAction('scanDuplicates', { questions: scanList });
+        const scanResult = await runAction('scanDuplicates', { questions: scanList }, { silent: true });
         const matches = scanResult?.matches || [];
 
         if (matches.length > 0) {
