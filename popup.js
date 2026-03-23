@@ -1231,7 +1231,7 @@ function cadmusAction(action, options) {
     return { success: failed === 0, processed: created + updated, skipped: failed, logs };
   }
 
-  // --- Fix Matching Questions (repair correctValues + add distractors) ---
+  // --- Fix Matching Questions (diagnostic: strip distractors only) ---
   async function fixMatchingQuestions(opts) {
     const { tenant, assessmentId } = parseCadmusUrl();
     const hdrs = { 'x-cadmus-role': 'AUTHOR', 'x-cadmus-tenant': tenant, 'x-cadmus-assessment': assessmentId };
@@ -1239,13 +1239,11 @@ function cadmusAction(action, options) {
     const table = findTanStackTable();
     if (!table) return { error: 'Could not find table instance. Is the library loaded?' };
 
-    // Get matching questions — selected or all
     let rows;
     const selected = table.getSelectedRowModel().rows.filter(r => r.original.questionType === 'MATCHING');
     if (selected.length > 0) {
       rows = selected;
     } else {
-      // No selection — fix all matching questions in the library
       rows = table.getRowModel().rows.filter(r => r.original.questionType === 'MATCHING');
     }
     if (!rows.length) return { error: 'No matching questions found in the library' };
@@ -1253,64 +1251,45 @@ function cadmusAction(action, options) {
     const logs = [];
     let fixed = 0, skipped = 0, failed = 0;
 
-    // Fetch all matching questions
-    const fetchedQuestions = [];
-    for (let i = 0; i < rows.length; i++) {
-      const qId = rows[i].original.id;
-      const fd = await gql(FETCH_Q, { questionId: qId }, hdrs);
-      if (fd.errors) {
-        logs.push({ msg: `Fetch failed for ${rows[i].original.shortPrompt?.substring(0, 40) || qId}`, cls: 'err' });
-        failed++;
-        continue;
-      }
-      fetchedQuestions.push(fd.data.question);
-    }
+    for (let ri = 0; ri < rows.length; ri++) {
+      const qId = rows[ri].original.id;
+      const label = rows[ri].original.shortPrompt?.substring(0, 40) || qId;
 
-    // Fix each question: repair correctValues and strip stale distractors
-    // No explicit distractors needed — in matching questions all targets are
-    // visible to students at once, so each target naturally serves as a
-    // distractor for every other prompt
-    for (const q of fetchedQuestions) {
+      // Fetch full question data
+      const fd = await gql(FETCH_Q, { questionId: qId }, hdrs);
+      if (fd.errors) { logs.push({ msg: `Fetch failed: ${label}`, cls: 'err' }); failed++; continue; }
+
+      const q = fd.data.question;
       const field = q.body?.fields?.[0];
       const inter = field?.interaction;
       if (!inter?.sourceSet || !inter?.targetSet) {
-        logs.push({ msg: `Skipped ${q.shortPrompt?.substring(0, 40)} — no match interaction`, cls: 'warn' });
-        skipped++;
-        continue;
+        logs.push({ msg: `${label} — no match interaction, skipped`, cls: 'warn' }); skipped++; continue;
       }
 
-      const sourceSet = inter.sourceSet;
-      const originalTargetSet = inter.targetSet;
+      const sources = inter.sourceSet;
+      const targets = inter.targetSet;
       const cv = field.response?.correctValues || [];
 
-      // Check if correctValues are broken (no space = bare target IDs)
-      const needsRepair = cv.length === 0 || cv.some(v => !v.includes(' '));
-
-      // Also check for stale distractors that shouldn't be there
-      const correctTargetIds = new Set();
-      if (!needsRepair) {
-        for (const v of cv) { const parts = v.split(' '); if (parts[1]) correctTargetIds.add(parts[1]); }
-      } else {
-        sourceSet.forEach((_, i) => { if (originalTargetSet[i]) correctTargetIds.add(originalTargetSet[i].identifier); });
-      }
-      const hasStaleDistractors = originalTargetSet.some(t => !correctTargetIds.has(t.identifier));
-
-      if (!needsRepair && !hasStaleDistractors) {
-        logs.push({ msg: `${q.shortPrompt?.substring(0, 40)} — already correct, skipped`, cls: 'ok' });
-        skipped++;
-        continue;
+      // Diagnostic: log exactly what we see
+      logs.push({ msg: `${label}: ${sources.length} sources, ${targets.length} targets, ${cv.length} correctValues`, cls: 'warn' });
+      if (cv.length > 0) {
+        logs.push({ msg: `  correctValues[0]: "${cv[0]}" (has space: ${cv[0].includes(' ')})`, cls: 'warn' });
       }
 
-      // ── STEP 1: Strip distractors first (separate update) ──
-      if (hasStaleDistractors) {
-        const cleanTargets = originalTargetSet.filter(t => correctTargetIds.has(t.identifier));
-        // Rebuild correctValues using existing IDs for the strip step
-        const stripCv = sourceSet.map((s, i) => {
-          const t = cleanTargets[i];
+      // Targets = sources means no distractors (1:1 mapping)
+      if (targets.length <= sources.length) {
+        // Just fix correctValues if needed
+        const needsRepair = cv.length === 0 || cv.some(v => !v.includes(' '));
+        if (!needsRepair) {
+          logs.push({ msg: `  → already clean (${sources.length}:${targets.length}), skipped`, cls: 'ok' }); skipped++; continue;
+        }
+        // Repair correctValues only
+        const repairedCv = sources.map((s, i) => {
+          const t = targets[i];
           return t ? `${s.identifier} ${t.identifier}` : null;
         }).filter(Boolean);
 
-        const stripInput = {
+        const input = {
           id: q.id,
           attributes: {
             promptDoc: q.body.promptDoc, questionType: q.questionType, shortPrompt: q.shortPrompt,
@@ -1320,74 +1299,69 @@ function cadmusAction(action, options) {
               identifier: field.identifier,
               response: {
                 partialScoring: field.response.partialScoring, matchSimilarity: null,
-                correctValues: stripCv,
+                correctValues: repairedCv,
                 correctRanges: [], correctAreas: [], caseSensitive: field.response.caseSensitive, errorMargin: null, baseType: null,
               },
               matchInteraction: {
-                sourceSet: sourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
-                targetSet: cleanTargets.map(t => ({ identifier: t.identifier, content: t.content })),
+                sourceSet: sources.map(s => ({ identifier: s.identifier, content: s.content })),
+                targetSet: targets.map(t => ({ identifier: t.identifier, content: t.content })),
               },
             }],
           },
         };
-        const stripRes = await gql(UPDATE_Q, { input: stripInput, childrenQuestions: [] }, hdrs);
-        if (stripRes.errors) {
-          logs.push({ msg: `Strip failed for ${q.shortPrompt?.substring(0, 40)}: ${stripRes.errors[0].message}`, cls: 'err' });
-          failed++;
-          continue;
-        }
-        logs.push({ msg: `${q.shortPrompt?.substring(0, 40)} — stripped ${originalTargetSet.length - cleanTargets.length} distractor(s)`, cls: 'ok' });
+        const res = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+        if (res.errors) { logs.push({ msg: `  → repair failed: ${res.errors[0].message}`, cls: 'err' }); failed++; }
+        else { logs.push({ msg: `  → repaired correctValues (${repairedCv.length} pairs)`, cls: 'ok' }); fixed++; }
+        continue;
       }
 
-      // ── STEP 2: Repair correctValues if needed ──
-      if (needsRepair) {
-        // Re-fetch the cleaned question
-        const fd2 = await gql(FETCH_Q, { questionId: q.id }, hdrs);
-        if (fd2.errors) { logs.push({ msg: `Re-fetch failed for ${q.shortPrompt?.substring(0, 40)}`, cls: 'err' }); failed++; continue; }
-        const q2 = fd2.data.question;
-        const field2 = q2.body?.fields?.[0];
-        const inter2 = field2?.interaction;
+      // targets.length > sources.length → has distractors
+      const distractorCount = targets.length - sources.length;
+      logs.push({ msg: `  → ${distractorCount} distractor(s) to remove`, cls: 'warn' });
 
-        const repairedCv = (inter2?.sourceSet || []).map((s, i) => {
-          const t = (inter2?.targetSet || [])[i];
-          return t ? `${s.identifier} ${t.identifier}` : null;
-        }).filter(Boolean);
+      // Keep only the first N targets (matching source count) — these are the correct ones
+      // Distractors were appended after the correct targets during import
+      const cleanTargets = targets.slice(0, sources.length);
+      const cleanCv = sources.map((s, i) => `${s.identifier} ${cleanTargets[i].identifier}`);
 
-        const repairInput = {
-          id: q2.id,
-          attributes: {
-            promptDoc: q2.body.promptDoc, questionType: q2.questionType, shortPrompt: q2.shortPrompt,
-            feedback: q2.body.feedback, promptImage: null, parentQuestionId: q2.parentQuestionId,
-            points: q2.points, shuffle: q2.shuffle,
-            fields: [{
-              identifier: field2.identifier,
-              response: {
-                partialScoring: field2.response.partialScoring, matchSimilarity: null,
-                correctValues: repairedCv,
-                correctRanges: [], correctAreas: [], caseSensitive: field2.response.caseSensitive, errorMargin: null, baseType: null,
-              },
-              matchInteraction: {
-                sourceSet: (inter2?.sourceSet || []).map(s => ({ identifier: s.identifier, content: s.content })),
-                targetSet: (inter2?.targetSet || []).map(t => ({ identifier: t.identifier, content: t.content })),
-              },
-            }],
-          },
-        };
-        const ud = await gql(UPDATE_Q, { input: repairInput, childrenQuestions: [] }, hdrs);
-        if (ud.errors) {
-          logs.push({ msg: `Repair failed for ${q.shortPrompt?.substring(0, 40)}: ${ud.errors[0].message}`, cls: 'err' });
-          failed++;
-          continue;
-        }
-        logs.push({ msg: `${q.shortPrompt?.substring(0, 40)} — repaired ${repairedCv.length} pairings`, cls: 'ok' });
+      logs.push({ msg: `  → keeping ${cleanTargets.length} targets, removing ${distractorCount}`, cls: 'warn' });
+      logs.push({ msg: `  → new correctValues[0]: "${cleanCv[0]}"`, cls: 'warn' });
+
+      const input = {
+        id: q.id,
+        attributes: {
+          promptDoc: q.body.promptDoc, questionType: q.questionType, shortPrompt: q.shortPrompt,
+          feedback: q.body.feedback, promptImage: null, parentQuestionId: q.parentQuestionId,
+          points: q.points, shuffle: q.shuffle,
+          fields: [{
+            identifier: field.identifier,
+            response: {
+              partialScoring: field.response.partialScoring, matchSimilarity: null,
+              correctValues: cleanCv,
+              correctRanges: [], correctAreas: [], caseSensitive: field.response.caseSensitive, errorMargin: null, baseType: null,
+            },
+            matchInteraction: {
+              sourceSet: sources.map(s => ({ identifier: s.identifier, content: s.content })),
+              targetSet: cleanTargets.map(t => ({ identifier: t.identifier, content: t.content })),
+            },
+          }],
+        },
+      };
+
+      const res = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+      if (res.errors) {
+        logs.push({ msg: `  → UPDATE FAILED: ${res.errors[0].message}`, cls: 'err' });
+        // Log the full error for debugging
+        logs.push({ msg: `  → Full error: ${JSON.stringify(res.errors).substring(0, 300)}`, cls: 'err' });
+        failed++;
+      } else {
+        logs.push({ msg: `  → SUCCESS: stripped ${distractorCount} distractor(s), ${cleanCv.length} correct pairs`, cls: 'ok' });
+        fixed++;
       }
-
-      fixed++;
-      continue;
     }
 
     if (fixed > 0) await refreshLibrary();
-    logs.push({ msg: `Fix complete: ${fixed} repaired, ${skipped} skipped, ${failed} failed`, cls: fixed > 0 ? 'ok' : 'err' });
+    logs.push({ msg: `Fix complete: ${fixed} fixed, ${skipped} skipped, ${failed} failed`, cls: fixed > 0 ? 'ok' : 'err' });
     return { success: failed === 0, processed: fixed, skipped, logs };
   }
 
