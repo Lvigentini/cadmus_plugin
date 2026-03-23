@@ -373,6 +373,10 @@ label input[type="number"] {
 .btn--danger:hover { background: #b71c1c; }
 .btn--import { background: #7b1fa2; }
 .btn--import:hover { background: #6a1b9a; }
+.fix-matching-section { border-top: 1px solid #e0d6f0; margin-top: 10px; padding-top: 10px; }
+.fix-hint { font-size: 11px; color: #888; margin: 0 0 6px; }
+.btn--fix-matching { background: #e8a030; color: #fff; width: 100%; }
+.btn--fix-matching:hover { background: #d09020; }
 .btn--import-all {
   width: 100%;
   justify-content: center;

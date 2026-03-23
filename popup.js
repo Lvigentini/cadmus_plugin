@@ -149,6 +149,25 @@ function cadmusAction(action, options) {
     return { rows, skipped: allRows.length - rows.length };
   }
 
+  // Build a lightweight index of all questions currently in the library
+  // Uses TanStack table data — no GraphQL calls needed
+  function fetchLibraryIndex() {
+    const table = findTanStackTable();
+    if (!table) return [];
+    return table.getRowModel().rows.map(r => ({
+      id: r.original.id,
+      type: r.original.questionType,
+      prompt: (r.original.shortPrompt || '').trim().toLowerCase(),
+    }));
+  }
+
+  // Find an existing question in the library by type and normalised prompt text
+  function findExistingQuestion(index, questionType, promptText) {
+    const needle = (promptText || '').trim().toLowerCase().substring(0, 200);
+    if (!needle) return null;
+    return index.find(q => q.type === questionType && q.prompt === needle) || null;
+  }
+
   async function gql(query, variables, headers) {
     const r = await fetch('https://api.cadmus.io/cadmus/api/graphql', {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', ...headers },
@@ -570,9 +589,12 @@ function cadmusAction(action, options) {
       });
 
     const logs = [];
-    let created = 0, failed = 0;
+    let created = 0, updated = 0, failed = 0;
     const createdIds = [];  // { id, bloom }
     const questions = opts.questions;
+
+    // ── Duplicate detection: scan existing library ──
+    const libIndex = fetchLibraryIndex();
 
     // ── Build distractor pool from all questions ──
     // Keyed by blank position (0, 1, …), each entry = { text, qIdx }
@@ -594,15 +616,12 @@ function cadmusAction(action, options) {
       const expectedBlanks = q.blanks.length;
 
       // Handle duplicated prompts (QTI sometimes repeats the template text)
-      // If we have more ___ markers than answer sets, trim the prompt to keep
-      // only the first N blanks (the rest are duplicates)
       if (blankCount > expectedBlanks && expectedBlanks > 0) {
         let kept = 0;
         prompt = prompt.replace(/___/g, (match) => {
           kept++;
           return kept <= expectedBlanks ? '___' : '';
         });
-        // Clean up leftover whitespace from removed markers
         prompt = prompt.replace(/\s{2,}/g, ' ').trim();
         logs.push({ msg: `Q${idx + 1}: trimmed duplicate blanks (${blankCount} → ${expectedBlanks})`, cls: 'warn' });
       } else if (blankCount < expectedBlanks) {
@@ -616,9 +635,39 @@ function cadmusAction(action, options) {
       const promptDoc = buildPromptDoc(prompt, blankUUIDs);
       const fields = buildFields(q.blanks, distractorPool, idx);
 
-      // Use per-blank points from XML, or override with UI value
       const pointsPerBlank = opts.points;
       const totalPoints = pointsPerBlank * q.blanks.length;
+
+      // ── Check for existing duplicate ──
+      const existing = findExistingQuestion(libIndex, 'BLANKS', prompt);
+      if (existing) {
+        // Update existing question instead of creating duplicate
+        const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+        if (fd.errors) {
+          logs.push({ msg: `Q${idx + 1} update fetch failed: ${fd.errors[0].message}`, cls: 'err' });
+          failed++;
+          continue;
+        }
+        const eq = fd.data.question;
+        const input = {
+          id: eq.id,
+          attributes: {
+            promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+            feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+            points: totalPoints, shuffle: opts.shuffle, fields,
+          },
+        };
+        const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+        if (ud.errors) {
+          logs.push({ msg: `Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' });
+          failed++;
+        } else {
+          createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+          logs.push({ msg: `Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${q.blanks.length} blank(s), ${totalPoints} pts)`, cls: 'ok' });
+          updated++;
+        }
+        continue;
+      }
 
       const variables = {
         assessmentId,
@@ -661,10 +710,10 @@ function cadmusAction(action, options) {
     await applyPostImportMeta(createdIds, hdrs, logs, 'FIB');
 
     // Refresh library
-    if (created > 0) await refreshLibrary();
-    logs.push({ msg: `Import complete: ${created} created, ${failed} failed`, cls: created > 0 ? 'ok' : 'err' });
+    if (created > 0 || updated > 0) await refreshLibrary();
+    logs.push({ msg: `Import complete: ${created} created, ${updated} updated, ${failed} failed`, cls: (created + updated) > 0 ? 'ok' : 'err' });
 
-    return { success: failed === 0, processed: created, skipped: failed, logs };
+    return { success: failed === 0, processed: created + updated, skipped: failed, logs };
   }
 
   // --- Import MCQ ---
@@ -681,9 +730,12 @@ function cadmusAction(action, options) {
     if (!subjectId) return { error: 'Could not fetch subjectId' };
 
     const logs = [];
-    let created = 0, failed = 0;
+    let created = 0, updated = 0, failed = 0;
     const createdIds = [];
     const questions = opts.questions;
+
+    // ── Duplicate detection ──
+    const libIndex = fetchLibraryIndex();
 
     for (let idx = 0; idx < questions.length; idx++) {
       const q = questions[idx];
@@ -719,6 +771,30 @@ function cadmusAction(action, options) {
           maxChoices: 1,
         },
       }];
+
+      // ── Check for existing duplicate ──
+      const existing = findExistingQuestion(libIndex, 'MCQ', q.prompt);
+      if (existing) {
+        const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+        if (fd.errors) { logs.push({ msg: `MCQ Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
+        const eq = fd.data.question;
+        const input = {
+          id: eq.id,
+          attributes: {
+            promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+            feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+            points: opts.points, shuffle: opts.shuffle, fields,
+          },
+        };
+        const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+        if (ud.errors) { logs.push({ msg: `MCQ Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
+        else {
+          createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+          logs.push({ msg: `MCQ Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${q.choices.length} choices)`, cls: 'ok' });
+          updated++;
+        }
+        continue;
+      }
 
       const variables = {
         assessmentId,
@@ -759,8 +835,8 @@ function cadmusAction(action, options) {
     // Tag with column tags + bloom + difficulty
     await applyPostImportMeta(createdIds, hdrs, logs, 'MCQ');
 
-    if (created > 0) await refreshLibrary();
-    logs.push({ msg: `MCQ import complete: ${created} created, ${failed} failed`, cls: created > 0 ? 'ok' : 'err' });
+    if (created > 0 || updated > 0) await refreshLibrary();
+    logs.push({ msg: `MCQ import complete: ${created} created, ${updated} updated, ${failed} failed`, cls: (created + updated) > 0 ? 'ok' : 'err' });
     return { success: failed === 0, processed: created, skipped: failed, logs };
   }
 
@@ -778,9 +854,12 @@ function cadmusAction(action, options) {
     if (!subjectId) return { error: 'Could not fetch subjectId' };
 
     const logs = [];
-    let created = 0, failed = 0;
+    let created = 0, updated = 0, failed = 0;
     const createdIds = [];
     const questions = opts.questions;
+
+    // ── Duplicate detection ──
+    const libIndex = fetchLibraryIndex();
 
     // Build a pool of all right-side answers across all matching questions
     // for use as distractors (Cadmus shows all targets to students at once)
@@ -811,7 +890,6 @@ function cadmusAction(action, options) {
       const correctValues = sourceSet.map((s, i) => `${s.identifier} ${targetSet[i].identifier}`);
 
       // Add distractors from OTHER matching questions' right-side answers
-      // Cadmus requires distractor text ≠ any correct target text (case-insensitive)
       const correctTexts = new Set(q.pairs.map(p => p.right.trim().toLowerCase()));
       const distractors = allRightAnswers
         .filter(ans => !correctTexts.has(ans.toLowerCase()))
@@ -842,6 +920,30 @@ function cadmusAction(action, options) {
           targetSet: fullTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
         },
       }];
+
+      // ── Check for existing duplicate ──
+      const existing = findExistingQuestion(libIndex, 'MATCHING', q.prompt);
+      if (existing) {
+        const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+        if (fd.errors) { logs.push({ msg: `Matching Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
+        const eq = fd.data.question;
+        const input = {
+          id: eq.id,
+          attributes: {
+            promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+            feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+            points: totalPoints, shuffle: opts.shuffle, fields,
+          },
+        };
+        const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+        if (ud.errors) { logs.push({ msg: `Matching Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
+        else {
+          createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+          logs.push({ msg: `Matching Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs + ${distractors.length} distractors)`, cls: 'ok' });
+          updated++;
+        }
+        continue;
+      }
 
       const variables = {
         assessmentId,
@@ -882,9 +984,9 @@ function cadmusAction(action, options) {
     // Tag with column tags + bloom + difficulty
     await applyPostImportMeta(createdIds, hdrs, logs, 'Matching');
 
-    if (created > 0) await refreshLibrary();
-    logs.push({ msg: `Matching import complete: ${created} created, ${failed} failed`, cls: created > 0 ? 'ok' : 'err' });
-    return { success: failed === 0, processed: created, skipped: failed, logs };
+    if (created > 0 || updated > 0) await refreshLibrary();
+    logs.push({ msg: `Matching import complete: ${created} created, ${updated} updated, ${failed} failed`, cls: (created + updated) > 0 ? 'ok' : 'err' });
+    return { success: failed === 0, processed: created + updated, skipped: failed, logs };
   }
 
   // --- Import Short Answer ---
@@ -901,10 +1003,13 @@ function cadmusAction(action, options) {
     if (!subjectId) return { error: 'Could not fetch subjectId' };
 
     const logs = [];
-    let created = 0, failed = 0;
+    let created = 0, updated = 0, failed = 0;
     const createdIds = [];
     const questions = opts.questions;
     const similarityFloat = (opts.similarity || 60) / 100;
+
+    // ── Duplicate detection ──
+    const libIndex = fetchLibraryIndex();
 
     for (let idx = 0; idx < questions.length; idx++) {
       const q = questions[idx];
@@ -931,6 +1036,30 @@ function cadmusAction(action, options) {
           attachmentEnabled: null,
         },
       }];
+
+      // ── Check for existing duplicate ──
+      const existing = findExistingQuestion(libIndex, 'SHORT', q.prompt);
+      if (existing) {
+        const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+        if (fd.errors) { logs.push({ msg: `Short Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
+        const eq = fd.data.question;
+        const input = {
+          id: eq.id,
+          attributes: {
+            promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+            feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+            points: opts.points, shuffle: false, fields,
+          },
+        };
+        const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+        if (ud.errors) { logs.push({ msg: `Short Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
+        else {
+          createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+          logs.push({ msg: `Short Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${correctValues.length} answer(s))`, cls: 'ok' });
+          updated++;
+        }
+        continue;
+      }
 
       const variables = {
         assessmentId,
@@ -971,9 +1100,158 @@ function cadmusAction(action, options) {
     // Tag with column tags + bloom + difficulty
     await applyPostImportMeta(createdIds, hdrs, logs, 'Short');
 
-    if (created > 0) await refreshLibrary();
-    logs.push({ msg: `Short answer import complete: ${created} created, ${failed} failed`, cls: created > 0 ? 'ok' : 'err' });
-    return { success: failed === 0, processed: created, skipped: failed, logs };
+    if (created > 0 || updated > 0) await refreshLibrary();
+    logs.push({ msg: `Short answer import complete: ${created} created, ${updated} updated, ${failed} failed`, cls: (created + updated) > 0 ? 'ok' : 'err' });
+    return { success: failed === 0, processed: created + updated, skipped: failed, logs };
+  }
+
+  // --- Fix Matching Questions (repair correctValues + add distractors) ---
+  async function fixMatchingQuestions(opts) {
+    const { tenant, assessmentId } = parseCadmusUrl();
+    const hdrs = { 'x-cadmus-role': 'AUTHOR', 'x-cadmus-tenant': tenant, 'x-cadmus-assessment': assessmentId };
+
+    const table = findTanStackTable();
+    if (!table) return { error: 'Could not find table instance. Is the library loaded?' };
+
+    // Get matching questions — selected or all
+    let rows;
+    const selected = table.getSelectedRowModel().rows.filter(r => r.original.questionType === 'MATCHING');
+    if (selected.length > 0) {
+      rows = selected;
+    } else {
+      // No selection — fix all matching questions in the library
+      rows = table.getRowModel().rows.filter(r => r.original.questionType === 'MATCHING');
+    }
+    if (!rows.length) return { error: 'No matching questions found in the library' };
+
+    const logs = [];
+    let fixed = 0, skipped = 0, failed = 0;
+
+    // Phase 1: Fetch all matching questions to collect the distractor pool
+    const fetchedQuestions = [];
+    for (let i = 0; i < rows.length; i++) {
+      const qId = rows[i].original.id;
+      const fd = await gql(FETCH_Q, { questionId: qId }, hdrs);
+      if (fd.errors) {
+        logs.push({ msg: `Fetch failed for ${rows[i].original.shortPrompt?.substring(0, 40) || qId}`, cls: 'err' });
+        failed++;
+        continue;
+      }
+      fetchedQuestions.push(fd.data.question);
+    }
+
+    // Build pool of all right-side (target) answer texts across all matching questions
+    const allTargetTexts = [];
+    for (const q of fetchedQuestions) {
+      const field = q.body?.fields?.[0];
+      const inter = field?.interaction;
+      if (!inter?.sourceSet || !inter?.targetSet) continue;
+      // Extract correct target texts from correctValues pairs
+      const cv = field.response?.correctValues || [];
+      for (const pair of cv) {
+        const parts = pair.split(' ');
+        if (parts.length === 2) {
+          const tgt = inter.targetSet.find(t => t.identifier === parts[1]);
+          if (tgt && !allTargetTexts.includes(tgt.content.trim())) {
+            allTargetTexts.push(tgt.content.trim());
+          }
+        }
+      }
+      // Also include targets matched by index (for broken questions without valid pairs)
+      for (const tgt of inter.targetSet) {
+        const text = tgt.content.trim();
+        if (text && !allTargetTexts.includes(text)) allTargetTexts.push(text);
+      }
+    }
+
+    // Phase 2: Fix each question
+    for (const q of fetchedQuestions) {
+      const field = q.body?.fields?.[0];
+      const inter = field?.interaction;
+      if (!inter?.sourceSet || !inter?.targetSet) {
+        logs.push({ msg: `Skipped ${q.shortPrompt?.substring(0, 40)} — no match interaction`, cls: 'warn' });
+        skipped++;
+        continue;
+      }
+
+      const sourceSet = inter.sourceSet;
+      const originalTargetSet = inter.targetSet;
+      const cv = field.response?.correctValues || [];
+
+      // Check if correctValues are broken (no space = bare target IDs)
+      const needsRepair = cv.length === 0 || cv.some(v => !v.includes(' '));
+
+      // Rebuild correctValues as "sourceId targetId" pairs
+      let newCorrectValues;
+      let correctTargetIds;
+      if (needsRepair) {
+        // Positional matching: source[i] → target[i]
+        newCorrectValues = sourceSet.map((s, i) => {
+          const t = originalTargetSet[i];
+          return t ? `${s.identifier} ${t.identifier}` : null;
+        }).filter(Boolean);
+        correctTargetIds = new Set(sourceSet.map((_, i) => originalTargetSet[i]?.identifier).filter(Boolean));
+        logs.push({ msg: `${q.shortPrompt?.substring(0, 40)} — repaired ${newCorrectValues.length} correct pairings`, cls: 'ok' });
+      } else {
+        newCorrectValues = cv;
+        correctTargetIds = new Set(cv.map(v => v.split(' ')[1]));
+      }
+
+      // Build correct target texts for distractor exclusion
+      const correctTargetTexts = new Set();
+      for (const tId of correctTargetIds) {
+        const t = originalTargetSet.find(t => t.identifier === tId);
+        if (t) correctTargetTexts.add(t.content.trim().toLowerCase());
+      }
+
+      // Build new distractor list from other questions' targets
+      const existingDistractorIds = new Set(
+        originalTargetSet.filter(t => !correctTargetIds.has(t.identifier)).map(t => t.content.trim().toLowerCase())
+      );
+
+      const newDistractors = allTargetTexts
+        .filter(text => !correctTargetTexts.has(text.toLowerCase()) && !existingDistractorIds.has(text.toLowerCase()))
+        .map(text => ({ identifier: `distractor_${nanoid(8)}`, content: text }));
+
+      // Keep only correct targets + new distractors (removes old broken distractors)
+      const correctTargets = originalTargetSet.filter(t => correctTargetIds.has(t.identifier));
+      const fullTargetSet = [...correctTargets, ...newDistractors];
+
+      // Update the question
+      const input = {
+        id: q.id,
+        attributes: {
+          promptDoc: q.body.promptDoc, questionType: q.questionType, shortPrompt: q.shortPrompt,
+          feedback: q.body.feedback, promptImage: null, parentQuestionId: q.parentQuestionId,
+          points: q.points, shuffle: q.shuffle,
+          fields: [{
+            identifier: field.identifier,
+            response: {
+              partialScoring: field.response.partialScoring, matchSimilarity: null,
+              correctValues: newCorrectValues,
+              correctRanges: [], correctAreas: [], caseSensitive: field.response.caseSensitive, errorMargin: null, baseType: null,
+            },
+            matchInteraction: {
+              sourceSet: sourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
+              targetSet: fullTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
+            },
+          }],
+        },
+      };
+
+      const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+      if (ud.errors) {
+        logs.push({ msg: `Update failed for ${q.shortPrompt?.substring(0, 40)}: ${ud.errors[0].message}`, cls: 'err' });
+        failed++;
+      } else {
+        logs.push({ msg: `Fixed ${q.shortPrompt?.substring(0, 40)} — ${newCorrectValues.length} pairs, ${newDistractors.length} distractors added`, cls: 'ok' });
+        fixed++;
+      }
+    }
+
+    if (fixed > 0) await refreshLibrary();
+    logs.push({ msg: `Fix complete: ${fixed} repaired, ${skipped} skipped, ${failed} failed`, cls: fixed > 0 ? 'ok' : 'err' });
+    return { success: failed === 0, processed: fixed, skipped, logs };
   }
 
   // --- Export questions ---
@@ -1092,7 +1370,7 @@ function cadmusAction(action, options) {
   }
 
   // --- Dispatch ---
-  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions };
+  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions };
   return actions[action](options);
 }
 
@@ -2070,6 +2348,17 @@ document.addEventListener('click', (e) => {
     case 'editMatching':
       options = { points: parseFloat($('#match-points').value), shuffle: isToggleOn('match-shuffle') };
       break;
+    case 'fixMatching':
+      // Fix matching questions — repair correctValues + add cross-question distractors
+      (async () => {
+        document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        log('Fixing matching questions — repairing correct answer pairings and adding distractors…');
+        const result = await runAction('fixMatchingQuestions', {});
+        if (result?.error) { logError(result.error); }
+        if (result?.logs) result.logs.forEach(l => log(l.msg, l.cls));
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      })();
+      return;
     case 'editShort':
       options = { points: parseFloat($('#short-points').value), similarity: parseInt($('#short-similarity').value, 10) };
       break;
