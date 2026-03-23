@@ -157,15 +157,55 @@ function cadmusAction(action, options) {
     return table.getRowModel().rows.map(r => ({
       id: r.original.id,
       type: r.original.questionType,
-      prompt: (r.original.shortPrompt || '').trim().toLowerCase(),
+      prompt: (r.original.shortPrompt || '').trim(),
     }));
   }
 
-  // Find an existing question in the library by type and normalised prompt text
+  // Jaccard word-overlap similarity (0–1)
+  function jaccardSimilarity(textA, textB) {
+    const tokenise = t => new Set(t.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(Boolean));
+    const setA = tokenise(textA);
+    const setB = tokenise(textB);
+    if (!setA.size || !setB.size) return 0;
+    let intersection = 0;
+    for (const w of setA) { if (setB.has(w)) intersection++; }
+    return intersection / (setA.size + setB.size - intersection);
+  }
+
+  // Find best matching existing question using Jaccard similarity (threshold 0.7)
   function findExistingQuestion(index, questionType, promptText) {
-    const needle = (promptText || '').trim().toLowerCase().substring(0, 200);
-    if (!needle) return null;
-    return index.find(q => q.type === questionType && q.prompt === needle) || null;
+    if (!promptText?.trim()) return null;
+    let best = null, bestScore = 0;
+    for (const q of index) {
+      if (q.type !== questionType) continue;
+      const score = jaccardSimilarity(promptText, q.prompt);
+      if (score >= 0.7 && score > bestScore) {
+        best = q;
+        bestScore = score;
+      }
+    }
+    return best ? { ...best, similarity: bestScore } : null;
+  }
+
+  // Scan all incoming questions against the library and return matches
+  function scanDuplicates(opts) {
+    const index = fetchLibraryIndex();
+    if (!index.length) return { matches: [] };
+    const matches = [];
+    for (const q of (opts.questions || [])) {
+      const match = findExistingQuestion(index, q.type, q.prompt);
+      if (match) {
+        matches.push({
+          globalIdx: q.globalIdx,
+          type: q.type,
+          incomingPrompt: q.prompt.substring(0, 200),
+          existingId: match.id,
+          existingPrompt: match.prompt.substring(0, 200),
+          similarity: Math.round(match.similarity * 100),
+        });
+      }
+    }
+    return { matches };
   }
 
   async function gql(query, variables, headers) {
@@ -638,35 +678,36 @@ function cadmusAction(action, options) {
       const pointsPerBlank = opts.points;
       const totalPoints = pointsPerBlank * q.blanks.length;
 
-      // ── Check for existing duplicate ──
-      const existing = findExistingQuestion(libIndex, 'BLANKS', prompt);
-      if (existing) {
-        // Update existing question instead of creating duplicate
-        const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
-        if (fd.errors) {
-          logs.push({ msg: `Q${idx + 1} update fetch failed: ${fd.errors[0].message}`, cls: 'err' });
-          failed++;
+      // ── Check resolution map for duplicates ──
+      const globalIdx = (opts.globalIdxOffset || 0) + idx;
+      const resolution = opts.resolutions?.[globalIdx];
+      if (resolution === 'skip') {
+        logs.push({ msg: `Q${idx + 1} skipped (user chose skip)`, cls: 'warn' });
+        continue;
+      }
+      if (resolution === 'update') {
+        const existing = findExistingQuestion(libIndex, 'BLANKS', prompt);
+        if (existing) {
+          const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+          if (fd.errors) { logs.push({ msg: `Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
+          const eq = fd.data.question;
+          const input = {
+            id: eq.id,
+            attributes: {
+              promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+              feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+              points: totalPoints, shuffle: opts.shuffle, fields,
+            },
+          };
+          const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+          if (ud.errors) { logs.push({ msg: `Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
+          else {
+            createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+            logs.push({ msg: `Q${idx + 1} updated — ${eq.shortPrompt?.substring(0, 40)} (${q.blanks.length} blank(s))`, cls: 'ok' });
+            updated++;
+          }
           continue;
         }
-        const eq = fd.data.question;
-        const input = {
-          id: eq.id,
-          attributes: {
-            promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
-            feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
-            points: totalPoints, shuffle: opts.shuffle, fields,
-          },
-        };
-        const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
-        if (ud.errors) {
-          logs.push({ msg: `Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' });
-          failed++;
-        } else {
-          createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-          logs.push({ msg: `Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${q.blanks.length} blank(s), ${totalPoints} pts)`, cls: 'ok' });
-          updated++;
-        }
-        continue;
       }
 
       const variables = {
@@ -772,28 +813,33 @@ function cadmusAction(action, options) {
         },
       }];
 
-      // ── Check for existing duplicate ──
-      const existing = findExistingQuestion(libIndex, 'MCQ', q.prompt);
-      if (existing) {
-        const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
-        if (fd.errors) { logs.push({ msg: `MCQ Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
-        const eq = fd.data.question;
-        const input = {
-          id: eq.id,
-          attributes: {
-            promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
-            feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
-            points: opts.points, shuffle: opts.shuffle, fields,
-          },
-        };
-        const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
-        if (ud.errors) { logs.push({ msg: `MCQ Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
-        else {
-          createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-          logs.push({ msg: `MCQ Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${q.choices.length} choices)`, cls: 'ok' });
-          updated++;
+      // ── Check resolution map for duplicates ──
+      const globalIdx = (opts.globalIdxOffset || 0) + idx;
+      const resolution = opts.resolutions?.[globalIdx];
+      if (resolution === 'skip') { logs.push({ msg: `MCQ Q${idx + 1} skipped (user chose skip)`, cls: 'warn' }); continue; }
+      if (resolution === 'update') {
+        const existing = findExistingQuestion(libIndex, 'MCQ', q.prompt);
+        if (existing) {
+          const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+          if (fd.errors) { logs.push({ msg: `MCQ Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
+          const eq = fd.data.question;
+          const input = {
+            id: eq.id,
+            attributes: {
+              promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+              feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+              points: opts.points, shuffle: opts.shuffle, fields,
+            },
+          };
+          const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+          if (ud.errors) { logs.push({ msg: `MCQ Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
+          else {
+            createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+            logs.push({ msg: `MCQ Q${idx + 1} updated — ${eq.shortPrompt?.substring(0, 40)} (${q.choices.length} choices)`, cls: 'ok' });
+            updated++;
+          }
+          continue;
         }
-        continue;
       }
 
       const variables = {
@@ -902,28 +948,33 @@ function cadmusAction(action, options) {
         },
       }];
 
-      // ── Check for existing duplicate ──
-      const existing = findExistingQuestion(libIndex, 'MATCHING', q.prompt);
-      if (existing) {
-        const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
-        if (fd.errors) { logs.push({ msg: `Matching Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
-        const eq = fd.data.question;
-        const input = {
-          id: eq.id,
-          attributes: {
-            promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
-            feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
-            points: totalPoints, shuffle: opts.shuffle, fields,
-          },
-        };
-        const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
-        if (ud.errors) { logs.push({ msg: `Matching Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
-        else {
-          createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-          logs.push({ msg: `Matching Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs)`, cls: 'ok' });
-          updated++;
+      // ── Check resolution map for duplicates ──
+      const globalIdx = (opts.globalIdxOffset || 0) + idx;
+      const resolution = opts.resolutions?.[globalIdx];
+      if (resolution === 'skip') { logs.push({ msg: `Matching Q${idx + 1} skipped (user chose skip)`, cls: 'warn' }); continue; }
+      if (resolution === 'update') {
+        const existing = findExistingQuestion(libIndex, 'MATCHING', q.prompt);
+        if (existing) {
+          const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+          if (fd.errors) { logs.push({ msg: `Matching Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
+          const eq = fd.data.question;
+          const input = {
+            id: eq.id,
+            attributes: {
+              promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+              feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+              points: totalPoints, shuffle: opts.shuffle, fields,
+            },
+          };
+          const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+          if (ud.errors) { logs.push({ msg: `Matching Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
+          else {
+            createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+            logs.push({ msg: `Matching Q${idx + 1} updated — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs)`, cls: 'ok' });
+            updated++;
+          }
+          continue;
         }
-        continue;
       }
 
       const variables = {
@@ -1018,28 +1069,33 @@ function cadmusAction(action, options) {
         },
       }];
 
-      // ── Check for existing duplicate ──
-      const existing = findExistingQuestion(libIndex, 'SHORT', q.prompt);
-      if (existing) {
-        const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
-        if (fd.errors) { logs.push({ msg: `Short Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
-        const eq = fd.data.question;
-        const input = {
-          id: eq.id,
-          attributes: {
-            promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
-            feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
-            points: opts.points, shuffle: false, fields,
-          },
-        };
-        const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
-        if (ud.errors) { logs.push({ msg: `Short Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
-        else {
-          createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-          logs.push({ msg: `Short Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${correctValues.length} answer(s))`, cls: 'ok' });
-          updated++;
+      // ── Check resolution map for duplicates ──
+      const globalIdx = (opts.globalIdxOffset || 0) + idx;
+      const resolution = opts.resolutions?.[globalIdx];
+      if (resolution === 'skip') { logs.push({ msg: `Short Q${idx + 1} skipped (user chose skip)`, cls: 'warn' }); continue; }
+      if (resolution === 'update') {
+        const existing = findExistingQuestion(libIndex, 'SHORT', q.prompt);
+        if (existing) {
+          const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+          if (fd.errors) { logs.push({ msg: `Short Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
+          const eq = fd.data.question;
+          const input = {
+            id: eq.id,
+            attributes: {
+              promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+              feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+              points: opts.points, shuffle: false, fields,
+            },
+          };
+          const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+          if (ud.errors) { logs.push({ msg: `Short Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
+          else {
+            createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+            logs.push({ msg: `Short Q${idx + 1} updated — ${eq.shortPrompt?.substring(0, 40)} (${correctValues.length} answer(s))`, cls: 'ok' });
+            updated++;
+          }
+          continue;
         }
-        continue;
       }
 
       const variables = {
@@ -1327,7 +1383,7 @@ function cadmusAction(action, options) {
   }
 
   // --- Dispatch ---
-  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions };
+  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions, scanDuplicates };
   return actions[action](options);
 }
 
@@ -1480,6 +1536,109 @@ function showColumnMapping(headers, rows) {
 function hideColumnMapping() {
   $('#column-mapping').style.display = 'none';
   $('#mapping-rows').innerHTML = '';
+}
+
+// ── Duplicate review panel ───────────────────────────────────────────────────
+let pendingDuplicateMatches = [];
+
+function showDuplicateReview(matches) {
+  pendingDuplicateMatches = matches;
+  const container = $('#review-rows');
+  container.innerHTML = '';
+
+  for (const m of matches) {
+    const row = document.createElement('div');
+    row.className = 'review-row';
+    row.dataset.idx = m.globalIdx;
+    row.innerHTML = `
+      <div class="review-col">
+        <span class="review-label">New (importing)</span>
+        <span class="review-type">${m.type}</span>
+        <p class="review-prompt">${escHtml(m.incomingPrompt)}</p>
+      </div>
+      <div class="review-similarity">${m.similarity}%</div>
+      <div class="review-col">
+        <span class="review-label">Existing (in library)</span>
+        <span class="review-type">${m.type}</span>
+        <p class="review-prompt">${escHtml(m.existingPrompt)}</p>
+      </div>
+      <div class="review-actions">
+        <label><input type="radio" name="dup-${m.globalIdx}" value="update" checked> Update existing</label>
+        <label><input type="radio" name="dup-${m.globalIdx}" value="create"> Create new</label>
+        <label><input type="radio" name="dup-${m.globalIdx}" value="skip"> Skip</label>
+      </div>
+    `;
+    container.appendChild(row);
+  }
+
+  $('#duplicate-review').style.display = '';
+}
+
+function hideDuplicateReview() {
+  $('#duplicate-review').style.display = 'none';
+  $('#review-rows').innerHTML = '';
+  pendingDuplicateMatches = [];
+}
+
+function getDuplicateResolutions() {
+  const resolutions = {};
+  for (const m of pendingDuplicateMatches) {
+    const sel = document.querySelector(`input[name="dup-${m.globalIdx}"]:checked`);
+    resolutions[m.globalIdx] = sel?.value || 'create';
+  }
+  return resolutions;
+}
+
+function escHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+async function executeImport(resolutions) {
+  const tag = importFileName || '';
+  const jobs = [];
+
+  // Track global index offsets for each type
+  let offset = 0;
+  if (parsedByType.fib.length) {
+    jobs.push(['importFIB', {
+      questions: parsedByType.fib,
+      points: parseFloat($('#fib-points').value),
+      shuffle: isToggleOn('fib-shuffle'),
+      tag, resolutions, globalIdxOffset: offset,
+    }]);
+    offset += parsedByType.fib.length;
+  }
+  if (parsedByType.mcq.length) {
+    jobs.push(['importMCQ', {
+      questions: parsedByType.mcq,
+      points: parseFloat($('#mcq-import-points').value),
+      shuffle: isToggleOn('mcq-import-shuffle'),
+      tag, resolutions, globalIdxOffset: offset,
+    }]);
+    offset += parsedByType.mcq.length;
+  }
+  if (parsedByType.matching.length) {
+    jobs.push(['importMatching', {
+      questions: parsedByType.matching,
+      points: parseFloat($('#match-import-points').value),
+      shuffle: isToggleOn('match-import-shuffle'),
+      tag, resolutions, globalIdxOffset: offset,
+    }]);
+    offset += parsedByType.matching.length;
+  }
+  if (parsedByType.short.length) {
+    jobs.push(['importShort', {
+      questions: parsedByType.short,
+      points: parseFloat($('#short-import-points').value),
+      similarity: parseInt($('#short-import-similarity').value, 10),
+      tag, resolutions, globalIdxOffset: offset,
+    }]);
+  }
+  for (const [act, opts] of jobs) {
+    await runAction(act, opts);
+  }
 }
 
 // ── Read user's column mapping from the UI ───────────────────────────────────
@@ -2382,45 +2541,50 @@ document.addEventListener('click', (e) => {
       })();
       return;
     case 'importAll':
-      // Run all non-empty types sequentially
+      // Scan for duplicates, then either show review panel or import directly
       (async () => {
         document.querySelectorAll('.btn').forEach(b => b.disabled = true);
-        const tag = importFileName || '';
-        const jobs = [];
-        if (parsedByType.fib.length) jobs.push(['importFIB', {
-          questions: parsedByType.fib,
-          points: parseFloat($('#fib-points').value),
-          shuffle: isToggleOn('fib-shuffle'),
-          tag,
-        }]);
-        if (parsedByType.mcq.length) jobs.push(['importMCQ', {
-          questions: parsedByType.mcq,
-          points: parseFloat($('#mcq-import-points').value),
-          shuffle: isToggleOn('mcq-import-shuffle'),
-          tag,
-        }]);
-        if (parsedByType.matching.length) jobs.push(['importMatching', {
-          questions: parsedByType.matching,
-          points: parseFloat($('#match-import-points').value),
-          shuffle: isToggleOn('match-import-shuffle'),
-          tag,
-        }]);
-        if (parsedByType.short.length) jobs.push(['importShort', {
-          questions: parsedByType.short,
-          points: parseFloat($('#short-import-points').value),
-          similarity: parseInt($('#short-import-similarity').value, 10),
-          tag,
-        }]);
-        for (const [act, opts] of jobs) {
-          await runAction(act, opts);
+        log('Scanning library for duplicates…');
+
+        // Build flat question list with global indices
+        let globalIdx = 0;
+        const scanList = [];
+        for (const q of parsedByType.fib)      scanList.push({ globalIdx: globalIdx++, type: 'BLANKS', prompt: q.prompt });
+        for (const q of parsedByType.mcq)      scanList.push({ globalIdx: globalIdx++, type: 'MCQ', prompt: q.prompt });
+        for (const q of parsedByType.matching)  scanList.push({ globalIdx: globalIdx++, type: 'MATCHING', prompt: q.prompt });
+        for (const q of parsedByType.short)     scanList.push({ globalIdx: globalIdx++, type: 'SHORT', prompt: q.prompt });
+
+        const scanResult = await runAction('scanDuplicates', { questions: scanList });
+        const matches = scanResult?.matches || [];
+
+        if (matches.length > 0) {
+          // Show duplicate review panel
+          showDuplicateReview(matches);
+          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+          log(`Found ${matches.length} potential duplicate(s) — review before importing`, 'warn');
+        } else {
+          // No duplicates — import directly
+          log('No duplicates found — importing…');
+          await executeImport({});
+          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+          updateImportUI();
         }
-        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
-        updateImportUI();
       })();
       return; // skip the runAction below
   }
 
   runAction(action, options);
+});
+
+// ── Duplicate review confirm button ──────────────────────────────────────────
+document.getElementById('btn-review-confirm')?.addEventListener('click', async () => {
+  const resolutions = getDuplicateResolutions();
+  hideDuplicateReview();
+  document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  log('Importing with duplicate resolutions…');
+  await executeImport(resolutions);
+  document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+  updateImportUI();
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
