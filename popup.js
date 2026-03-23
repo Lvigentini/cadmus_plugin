@@ -531,7 +531,7 @@ function cadmusAction(action, options) {
     for (const row of rows) {
       const { id, shortPrompt } = row.original;
       const d = await gql(ARCHIVE_Q, { questionId: id }, hdrs);
-      if (d.errors) { logs.push({ msg: `Failed: ${shortPrompt?.substring(0, 50) || id}`, cls: 'err' }); errors++; }
+      if (d.errors) { logs.push({ msg: `Failed: ${shortPrompt?.substring(0, 50) || id} — ${d.errors[0]?.message || 'unknown error'}`, cls: 'err' }); errors++; }
       else logs.push({ msg: `Deleted: ${shortPrompt?.substring(0, 50) || id}`, cls: 'ok' });
     }
 
