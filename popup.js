@@ -962,22 +962,80 @@ function cadmusAction(action, options) {
           const eq = fd.data.question;
           const eqField = eq.body?.fields?.[0];
           const eqInter = eqField?.interaction;
+          const eqCv = eqField?.response?.correctValues || [];
 
-          // Rebuild using the existing question's identifiers where possible,
-          // or create new ones if pair count changed
+          // ── STEP 1: Strip distractors from the existing question ──
+          // Identify which existing targets are correct (referenced in correctValues)
+          const correctTargetIds = new Set();
+          for (const cv of eqCv) {
+            const parts = cv.split(' ');
+            if (parts.length === 2) correctTargetIds.add(parts[1]);
+          }
+          // If correctValues are broken (bare IDs), use positional matching
+          if (correctTargetIds.size === 0 && eqInter?.sourceSet?.length) {
+            eqInter.sourceSet.forEach((_, i) => {
+              if (eqInter.targetSet[i]) correctTargetIds.add(eqInter.targetSet[i].identifier);
+            });
+          }
+
+          const hasDistractors = (eqInter?.targetSet || []).some(t => !correctTargetIds.has(t.identifier));
+          if (hasDistractors) {
+            // First update: keep existing correct pairs, just remove distractors
+            const cleanTargets = (eqInter?.targetSet || []).filter(t => correctTargetIds.has(t.identifier));
+            const cleanCv = (eqInter?.sourceSet || []).map((s, i) => {
+              const t = cleanTargets[i];
+              return t ? `${s.identifier} ${t.identifier}` : null;
+            }).filter(Boolean);
+
+            const stripInput = {
+              id: eq.id,
+              attributes: {
+                promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
+                feedback: eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+                points: eq.points, shuffle: eq.shuffle,
+                fields: [{
+                  identifier: eqField.identifier,
+                  response: {
+                    partialScoring: eqField.response.partialScoring, matchSimilarity: null,
+                    correctValues: cleanCv,
+                    correctRanges: [], correctAreas: [], caseSensitive: eqField.response.caseSensitive, errorMargin: null, baseType: null,
+                  },
+                  matchInteraction: {
+                    sourceSet: (eqInter?.sourceSet || []).map(s => ({ identifier: s.identifier, content: s.content })),
+                    targetSet: cleanTargets.map(t => ({ identifier: t.identifier, content: t.content })),
+                  },
+                }],
+              },
+            };
+            const stripRes = await gql(UPDATE_Q, { input: stripInput, childrenQuestions: [] }, hdrs);
+            if (stripRes.errors) {
+              logs.push({ msg: `Matching Q${idx + 1} strip distractors failed: ${stripRes.errors[0].message}`, cls: 'err' });
+              failed++;
+              continue;
+            }
+            logs.push({ msg: `Matching Q${idx + 1} — stripped ${(eqInter?.targetSet || []).length - cleanTargets.length} distractor(s)`, cls: 'ok' });
+          }
+
+          // ── STEP 2: Re-fetch the cleaned question and apply new answer data ──
+          const fd2 = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
+          if (fd2.errors) { logs.push({ msg: `Matching Q${idx + 1} re-fetch failed`, cls: 'err' }); failed++; continue; }
+          const eq2 = fd2.data.question;
+          const eq2Field = eq2.body?.fields?.[0];
+          const eq2Inter = eq2Field?.interaction;
+
+          // Build new source/target sets reusing existing IDs where possible
           const updSourceSet = q.pairs.map((p, pi) => ({
-            identifier: eqInter?.sourceSet?.[pi]?.identifier || `source_${nanoid(8)}`,
+            identifier: eq2Inter?.sourceSet?.[pi]?.identifier || `source_${nanoid(8)}`,
             content: p.left,
           }));
           const updTargetSet = q.pairs.map((p, pi) => ({
-            identifier: eqInter?.targetSet?.[pi]?.identifier || `target_${nanoid(8)}`,
+            identifier: eq2Inter?.targetSet?.[pi]?.identifier || `target_${nanoid(8)}`,
             content: p.right,
           }));
-          // Clean correctValues — no distractors, just source→target pairs
           const updCorrectValues = updSourceSet.map((s, pi) => `${s.identifier} ${updTargetSet[pi].identifier}`);
 
           const updFields = [{
-            identifier: eqField?.identifier || '1',
+            identifier: eq2Field?.identifier || '1',
             response: {
               partialScoring: null, matchSimilarity: null,
               correctValues: updCorrectValues,
@@ -990,18 +1048,18 @@ function cadmusAction(action, options) {
           }];
 
           const input = {
-            id: eq.id,
+            id: eq2.id,
             attributes: {
-              promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
-              feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
+              promptDoc: eq2.body.promptDoc, questionType: eq2.questionType, shortPrompt: eq2.shortPrompt,
+              feedback: q.feedback || eq2.body.feedback, promptImage: null, parentQuestionId: eq2.parentQuestionId,
               points: totalPoints, shuffle: opts.shuffle, fields: updFields,
             },
           };
           const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
           if (ud.errors) { logs.push({ msg: `Matching Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
           else {
-            createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-            logs.push({ msg: `Matching Q${idx + 1} updated — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs, distractors stripped)`, cls: 'ok' });
+            createdIds.push({ id: eq2.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
+            logs.push({ msg: `Matching Q${idx + 1} updated — ${eq2.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs)`, cls: 'ok' });
             updated++;
           }
           continue;
@@ -1243,54 +1301,89 @@ function cadmusAction(action, options) {
         continue;
       }
 
-      // Rebuild correctValues as "sourceId targetId" pairs
-      let newCorrectValues;
-      if (needsRepair) {
-        newCorrectValues = sourceSet.map((s, i) => {
-          const t = originalTargetSet[i];
+      // ── STEP 1: Strip distractors first (separate update) ──
+      if (hasStaleDistractors) {
+        const cleanTargets = originalTargetSet.filter(t => correctTargetIds.has(t.identifier));
+        // Rebuild correctValues using existing IDs for the strip step
+        const stripCv = sourceSet.map((s, i) => {
+          const t = cleanTargets[i];
           return t ? `${s.identifier} ${t.identifier}` : null;
         }).filter(Boolean);
-      } else {
-        newCorrectValues = cv;
+
+        const stripInput = {
+          id: q.id,
+          attributes: {
+            promptDoc: q.body.promptDoc, questionType: q.questionType, shortPrompt: q.shortPrompt,
+            feedback: q.body.feedback, promptImage: null, parentQuestionId: q.parentQuestionId,
+            points: q.points, shuffle: q.shuffle,
+            fields: [{
+              identifier: field.identifier,
+              response: {
+                partialScoring: field.response.partialScoring, matchSimilarity: null,
+                correctValues: stripCv,
+                correctRanges: [], correctAreas: [], caseSensitive: field.response.caseSensitive, errorMargin: null, baseType: null,
+              },
+              matchInteraction: {
+                sourceSet: sourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
+                targetSet: cleanTargets.map(t => ({ identifier: t.identifier, content: t.content })),
+              },
+            }],
+          },
+        };
+        const stripRes = await gql(UPDATE_Q, { input: stripInput, childrenQuestions: [] }, hdrs);
+        if (stripRes.errors) {
+          logs.push({ msg: `Strip failed for ${q.shortPrompt?.substring(0, 40)}: ${stripRes.errors[0].message}`, cls: 'err' });
+          failed++;
+          continue;
+        }
+        logs.push({ msg: `${q.shortPrompt?.substring(0, 40)} — stripped ${originalTargetSet.length - cleanTargets.length} distractor(s)`, cls: 'ok' });
       }
 
-      // Keep only correct targets (strip any distractors)
-      const cleanTargetSet = originalTargetSet.filter(t => correctTargetIds.has(t.identifier));
+      // ── STEP 2: Repair correctValues if needed ──
+      if (needsRepair) {
+        // Re-fetch the cleaned question
+        const fd2 = await gql(FETCH_Q, { questionId: q.id }, hdrs);
+        if (fd2.errors) { logs.push({ msg: `Re-fetch failed for ${q.shortPrompt?.substring(0, 40)}`, cls: 'err' }); failed++; continue; }
+        const q2 = fd2.data.question;
+        const field2 = q2.body?.fields?.[0];
+        const inter2 = field2?.interaction;
 
-      // Update the question
-      const input = {
-        id: q.id,
-        attributes: {
-          promptDoc: q.body.promptDoc, questionType: q.questionType, shortPrompt: q.shortPrompt,
-          feedback: q.body.feedback, promptImage: null, parentQuestionId: q.parentQuestionId,
-          points: q.points, shuffle: q.shuffle,
-          fields: [{
-            identifier: field.identifier,
-            response: {
-              partialScoring: field.response.partialScoring, matchSimilarity: null,
-              correctValues: newCorrectValues,
-              correctRanges: [], correctAreas: [], caseSensitive: field.response.caseSensitive, errorMargin: null, baseType: null,
-            },
-            matchInteraction: {
-              sourceSet: sourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
-              targetSet: cleanTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
-            },
-          }],
-        },
-      };
+        const repairedCv = (inter2?.sourceSet || []).map((s, i) => {
+          const t = (inter2?.targetSet || [])[i];
+          return t ? `${s.identifier} ${t.identifier}` : null;
+        }).filter(Boolean);
 
-      const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
-      if (ud.errors) {
-        logs.push({ msg: `Update failed for ${q.shortPrompt?.substring(0, 40)}: ${ud.errors[0].message}`, cls: 'err' });
-        failed++;
-      } else {
-        const removedCount = originalTargetSet.length - cleanTargetSet.length;
-        const parts = [];
-        if (needsRepair) parts.push(`repaired ${newCorrectValues.length} pairings`);
-        if (removedCount > 0) parts.push(`removed ${removedCount} stale distractor(s)`);
-        logs.push({ msg: `Fixed ${q.shortPrompt?.substring(0, 40)} — ${parts.join(', ')}`, cls: 'ok' });
-        fixed++;
+        const repairInput = {
+          id: q2.id,
+          attributes: {
+            promptDoc: q2.body.promptDoc, questionType: q2.questionType, shortPrompt: q2.shortPrompt,
+            feedback: q2.body.feedback, promptImage: null, parentQuestionId: q2.parentQuestionId,
+            points: q2.points, shuffle: q2.shuffle,
+            fields: [{
+              identifier: field2.identifier,
+              response: {
+                partialScoring: field2.response.partialScoring, matchSimilarity: null,
+                correctValues: repairedCv,
+                correctRanges: [], correctAreas: [], caseSensitive: field2.response.caseSensitive, errorMargin: null, baseType: null,
+              },
+              matchInteraction: {
+                sourceSet: (inter2?.sourceSet || []).map(s => ({ identifier: s.identifier, content: s.content })),
+                targetSet: (inter2?.targetSet || []).map(t => ({ identifier: t.identifier, content: t.content })),
+              },
+            }],
+          },
+        };
+        const ud = await gql(UPDATE_Q, { input: repairInput, childrenQuestions: [] }, hdrs);
+        if (ud.errors) {
+          logs.push({ msg: `Repair failed for ${q.shortPrompt?.substring(0, 40)}: ${ud.errors[0].message}`, cls: 'err' });
+          failed++;
+          continue;
+        }
+        logs.push({ msg: `${q.shortPrompt?.substring(0, 40)} — repaired ${repairedCv.length} pairings`, cls: 'ok' });
       }
+
+      fixed++;
+      continue;
     }
 
     if (fixed > 0) await refreshLibrary();
