@@ -85,7 +85,7 @@ The log panel at the bottom shows real-time progress for all operations.
 
 ### Import Questions
 
-- **Four question types**: Fill-in-Blank, MCQ, Matching, Short Answer
+- **Focuses on four question types**: Fill-in-Blank, MCQ, Matching, and Short Answer. Cadmus supports additional types (e.g. Numeric, Extended Response, Hotspot) — these are not yet covered and represent an area for future development
 - **From Excel (.xlsx)**: reads the standard question bank format; mixed types detected automatically
 - **From QTI XML (.xml)**: reads Blackboard QTI 1.2 XML exports
 - **Import All**: one-click button imports every question across all detected types
