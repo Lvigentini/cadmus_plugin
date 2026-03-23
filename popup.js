@@ -782,12 +782,22 @@ function cadmusAction(action, options) {
     const createdIds = [];
     const questions = opts.questions;
 
+    // Build a pool of all right-side answers across all matching questions
+    // for use as distractors (Cadmus shows all targets to students at once)
+    const allRightAnswers = [];
+    for (const mq of questions) {
+      for (const pair of mq.pairs) {
+        const val = pair.right.trim();
+        if (val && !allRightAnswers.includes(val)) allRightAnswers.push(val);
+      }
+    }
+
     for (let idx = 0; idx < questions.length; idx++) {
       const q = questions[idx];
       const shortPrompt = q.prompt.substring(0, 200);
       const promptDoc = simplePromptDoc(q.prompt);
 
-      // Build source and target sets
+      // Build source and target sets (correct pairs)
       const sourceSet = q.pairs.map((p, i) => ({
         identifier: `source_${nanoid(8)}`,
         content: p.left,
@@ -799,6 +809,19 @@ function cadmusAction(action, options) {
 
       // correctValues: space-separated "sourceId targetId" pairs
       const correctValues = sourceSet.map((s, i) => `${s.identifier} ${targetSet[i].identifier}`);
+
+      // Add distractors from OTHER matching questions' right-side answers
+      // Cadmus requires distractor text ≠ any correct target text (case-insensitive)
+      const correctTexts = new Set(q.pairs.map(p => p.right.trim().toLowerCase()));
+      const distractors = allRightAnswers
+        .filter(ans => !correctTexts.has(ans.toLowerCase()))
+        .map(ans => ({
+          identifier: `distractor_${nanoid(8)}`,
+          content: ans,
+        }));
+
+      // Full targetSet = correct targets + distractors
+      const fullTargetSet = [...targetSet, ...distractors];
 
       const totalPoints = opts.points * q.pairs.length;
 
@@ -816,7 +839,7 @@ function cadmusAction(action, options) {
         },
         matchInteraction: {
           sourceSet: sourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
-          targetSet: targetSet.map(t => ({ identifier: t.identifier, content: t.content })),
+          targetSet: fullTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
         },
       }];
 
@@ -844,7 +867,7 @@ function cadmusAction(action, options) {
       } else {
         const cq = res?.data?.createQuestion;
         if (cq?.id) createdIds.push({ id: cq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-        logs.push({ msg: `Matching Q${idx + 1} created — #${cq?.libraryId} (${q.pairs.length} pairs, ${totalPoints} pts)`, cls: 'ok' });
+        logs.push({ msg: `Matching Q${idx + 1} created — #${cq?.libraryId} (${q.pairs.length} pairs + ${distractors.length} distractors, ${totalPoints} pts)`, cls: 'ok' });
         created++;
       }
     }
