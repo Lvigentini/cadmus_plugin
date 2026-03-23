@@ -1251,7 +1251,9 @@ function cadmusAction(action, options) {
     const logs = [];
     let fixed = 0, skipped = 0, failed = 0;
 
-    for (let ri = 0; ri < rows.length; ri++) {
+    const maxToProcess = Math.min(rows.length, 3); // diagnostic: limit to first 3
+    logs.push({ msg: `Processing ${maxToProcess} of ${rows.length} matching questions (diagnostic limit)`, cls: 'warn' });
+    for (let ri = 0; ri < maxToProcess; ri++) {
       const qId = rows[ri].original.id;
       const label = rows[ri].original.shortPrompt?.substring(0, 40) || qId;
 
@@ -1348,15 +1350,34 @@ function cadmusAction(action, options) {
         },
       };
 
+      // Log exactly what we're sending
+      logs.push({ msg: `  → sending: ${cleanTargets.length} targets in targetSet, ${cleanCv.length} correctValues`, cls: 'warn' });
+
       const res = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
       if (res.errors) {
         logs.push({ msg: `  → UPDATE FAILED: ${res.errors[0].message}`, cls: 'err' });
-        // Log the full error for debugging
-        logs.push({ msg: `  → Full error: ${JSON.stringify(res.errors).substring(0, 300)}`, cls: 'err' });
+        logs.push({ msg: `  → Full error: ${JSON.stringify(res.errors).substring(0, 500)}`, cls: 'err' });
         failed++;
       } else {
-        logs.push({ msg: `  → SUCCESS: stripped ${distractorCount} distractor(s), ${cleanCv.length} correct pairs`, cls: 'ok' });
-        fixed++;
+        logs.push({ msg: `  → UPDATE returned OK`, cls: 'ok' });
+
+        // Verify: re-fetch and check if targets actually changed
+        const verify = await gql(FETCH_Q, { questionId: qId }, hdrs);
+        if (verify.errors) {
+          logs.push({ msg: `  → verify fetch failed`, cls: 'err' });
+        } else {
+          const vInter = verify.data.question.body?.fields?.[0]?.interaction;
+          const vCv = verify.data.question.body?.fields?.[0]?.response?.correctValues || [];
+          const afterTargets = vInter?.targetSet?.length || 0;
+          const afterSources = vInter?.sourceSet?.length || 0;
+          if (afterTargets > afterSources) {
+            logs.push({ msg: `  → VERIFY FAILED: still ${afterTargets} targets (expected ${afterSources}) — Cadmus did not remove distractors`, cls: 'err' });
+            failed++;
+          } else {
+            logs.push({ msg: `  → VERIFIED: ${afterSources} sources, ${afterTargets} targets, ${vCv.length} correctValues ✓`, cls: 'ok' });
+            fixed++;
+          }
+        }
       }
     }
 
