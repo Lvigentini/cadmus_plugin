@@ -960,19 +960,48 @@ function cadmusAction(action, options) {
           const fd = await gql(FETCH_Q, { questionId: existing.id }, hdrs);
           if (fd.errors) { logs.push({ msg: `Matching Q${idx + 1} update fetch failed`, cls: 'err' }); failed++; continue; }
           const eq = fd.data.question;
+          const eqField = eq.body?.fields?.[0];
+          const eqInter = eqField?.interaction;
+
+          // Rebuild using the existing question's identifiers where possible,
+          // or create new ones if pair count changed
+          const updSourceSet = q.pairs.map((p, pi) => ({
+            identifier: eqInter?.sourceSet?.[pi]?.identifier || `source_${nanoid(8)}`,
+            content: p.left,
+          }));
+          const updTargetSet = q.pairs.map((p, pi) => ({
+            identifier: eqInter?.targetSet?.[pi]?.identifier || `target_${nanoid(8)}`,
+            content: p.right,
+          }));
+          // Clean correctValues — no distractors, just source→target pairs
+          const updCorrectValues = updSourceSet.map((s, pi) => `${s.identifier} ${updTargetSet[pi].identifier}`);
+
+          const updFields = [{
+            identifier: eqField?.identifier || '1',
+            response: {
+              partialScoring: null, matchSimilarity: null,
+              correctValues: updCorrectValues,
+              correctRanges: [], correctAreas: [], caseSensitive: false, errorMargin: null, baseType: null,
+            },
+            matchInteraction: {
+              sourceSet: updSourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
+              targetSet: updTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
+            },
+          }];
+
           const input = {
             id: eq.id,
             attributes: {
               promptDoc: eq.body.promptDoc, questionType: eq.questionType, shortPrompt: eq.shortPrompt,
               feedback: q.feedback || eq.body.feedback, promptImage: null, parentQuestionId: eq.parentQuestionId,
-              points: totalPoints, shuffle: opts.shuffle, fields,
+              points: totalPoints, shuffle: opts.shuffle, fields: updFields,
             },
           };
           const ud = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
           if (ud.errors) { logs.push({ msg: `Matching Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
           else {
             createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-            logs.push({ msg: `Matching Q${idx + 1} updated — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs)`, cls: 'ok' });
+            logs.push({ msg: `Matching Q${idx + 1} updated — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs, distractors stripped)`, cls: 'ok' });
             updated++;
           }
           continue;
