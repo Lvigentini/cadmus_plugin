@@ -1518,16 +1518,26 @@ function showColumnMapping(headers, rows) {
     const hdrLower = hdr.toLowerCase().trim();
     if (AUTO_TAG_KEYS.includes(hdrLower)) cb.checked = true;
 
-    const text = document.createElement('span');
-    text.textContent = hdr;
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'mapping-tag-name';
+    nameSpan.textContent = hdr;
 
-    const sampleVal = String(rows[0]?.[hdr] ?? '').substring(0, 30);
+    // Collect unique values from the first 5 rows as preview
+    const seen = new Set();
+    const preview = [];
+    for (let ri = 0; ri < Math.min(5, rows.length); ri++) {
+      const val = String(rows[ri]?.[hdr] ?? '').trim();
+      if (val && !seen.has(val.toLowerCase())) {
+        seen.add(val.toLowerCase());
+        preview.push(val.length > 25 ? val.substring(0, 25) + '…' : val);
+      }
+    }
     const sampleSpan = document.createElement('span');
     sampleSpan.className = 'mapping-tag-sample';
-    sampleSpan.textContent = sampleVal ? `(${sampleVal})` : '';
+    sampleSpan.textContent = preview.length ? `(${preview.join(', ')})` : '';
 
     lbl.appendChild(cb);
-    lbl.appendChild(text);
+    lbl.appendChild(nameSpan);
     lbl.appendChild(sampleSpan);
     tagGrid.appendChild(lbl);
   }

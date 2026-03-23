@@ -174,17 +174,17 @@ body {
 }
 .mapping-tag-grid {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  flex-direction: column;
+  gap: 4px;
 }
 .mapping-tag-item {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: baseline;
+  gap: 5px;
   font-size: 12px;
   color: #555;
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 3px 6px;
   border-radius: 4px;
   transition: background 0.15s;
 }
@@ -192,11 +192,13 @@ body {
 .mapping-tag-item input[type="checkbox"] {
   accent-color: #7b1fa2;
   margin: 0;
+  flex-shrink: 0;
+  align-self: center;
 }
+.mapping-tag-name { font-weight: 500; white-space: nowrap; }
 .mapping-tag-sample {
   font-size: 10px;
   color: #aaa;
-  max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
