@@ -2593,13 +2593,64 @@ document.addEventListener('click', (e) => {
   runAction(action, options);
 });
 
+// ── Per-type import buttons ──────────────────────────────────────────────────
+document.querySelectorAll('.btn--import-type').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const type = btn.dataset.importType;
+    if (!parsedByType[type]?.length) { log(`No ${type} questions parsed`, 'warn'); return; }
+
+    document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+    const tag = importFileName || '';
+    const typeMap = {
+      fib:      ['importFIB',      { questions: parsedByType.fib, points: parseFloat($('#fib-points').value), shuffle: isToggleOn('fib-shuffle'), tag }],
+      mcq:      ['importMCQ',      { questions: parsedByType.mcq, points: parseFloat($('#mcq-import-points').value), shuffle: isToggleOn('mcq-import-shuffle'), tag }],
+      matching: ['importMatching', { questions: parsedByType.matching, points: parseFloat($('#match-import-points').value), shuffle: isToggleOn('match-import-shuffle'), tag }],
+      short:    ['importShort',    { questions: parsedByType.short, points: parseFloat($('#short-import-points').value), similarity: parseInt($('#short-import-similarity').value, 10), tag }],
+    };
+    const [action, opts] = typeMap[type];
+
+    // Scan for duplicates within this type only
+    const typeNameMap = { fib: 'BLANKS', mcq: 'MCQ', matching: 'MATCHING', short: 'SHORT' };
+    const scanList = parsedByType[type].map((q, i) => ({ globalIdx: i, type: typeNameMap[type], prompt: q.prompt }));
+    const scanResult = await runAction('scanDuplicates', { questions: scanList }, { silent: true });
+    const matches = scanResult?.matches || [];
+
+    if (matches.length > 0) {
+      showDuplicateReview(matches);
+      // Store single-type job for confirm button
+      window._pendingSingleTypeJob = { action, opts };
+      document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      log(`Found ${matches.length} potential duplicate(s) — review before importing`, 'warn');
+    } else {
+      log(`Importing ${parsedByType[type].length} ${type.toUpperCase()} question(s)…`);
+      opts.resolutions = {};
+      opts.globalIdxOffset = 0;
+      await runAction(action, opts);
+      document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      updateImportUI();
+    }
+  });
+});
+
 // ── Duplicate review confirm button ──────────────────────────────────────────
 document.getElementById('btn-review-confirm')?.addEventListener('click', async () => {
   const resolutions = getDuplicateResolutions();
   hideDuplicateReview();
   document.querySelectorAll('.btn').forEach(b => b.disabled = true);
   log('Importing with duplicate resolutions…');
-  await executeImport(resolutions);
+
+  if (window._pendingSingleTypeJob) {
+    // Single-type import with resolutions
+    const { action, opts } = window._pendingSingleTypeJob;
+    opts.resolutions = resolutions;
+    opts.globalIdxOffset = 0;
+    await runAction(action, opts);
+    window._pendingSingleTypeJob = null;
+  } else {
+    // Full import with resolutions
+    await executeImport(resolutions);
+  }
+
   document.querySelectorAll('.btn').forEach(b => b.disabled = false);
   updateImportUI();
 });

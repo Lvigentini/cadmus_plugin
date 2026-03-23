@@ -377,6 +377,8 @@ label input[type="number"] {
 .btn--import:hover { background: #6a1b9a; }
 .fix-matching-section { border-top: 1px solid #e0d6f0; margin-top: 10px; padding-top: 10px; }
 .fix-hint { font-size: 11px; color: #888; margin: 0 0 6px; }
+.btn--import-type { width: 100%; margin-top: 6px; font-size: 12px; padding: 6px 12px; opacity: 0.85; }
+.btn--import-type:hover { opacity: 1; }
 .btn--fix-matching { background: #e8a030; color: #fff; width: 100%; }
 .btn--fix-matching:hover { background: #d09020; }
 
