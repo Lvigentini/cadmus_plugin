@@ -521,7 +521,7 @@ function cadmusAction(action, options) {
 
   async function deleteSelected() {
     const { tenant, assessmentId } = parseCadmusUrl();
-    const hdrs = { 'x-cadmus-role': 'lecturer', 'x-cadmus-tenant': tenant, 'x-cadmus-assessment': assessmentId, 'x-cadmus-url': window.location.href };
+    const hdrs = { 'x-cadmus-role': 'AUTHOR', 'x-cadmus-tenant': tenant, 'x-cadmus-assessment': assessmentId, 'x-cadmus-url': window.location.href };
     const sel = getSelectedRows();
     if (sel.error) return sel;
     const { rows } = sel;
@@ -543,7 +543,7 @@ function cadmusAction(action, options) {
   async function importFIB(opts) {
     const { tenant, assessmentId } = parseCadmusUrl();
     const hdrs = {
-      'x-cadmus-role': 'lecturer',
+      'x-cadmus-role': 'AUTHOR',
       'x-cadmus-tenant': tenant,
       'x-cadmus-assessment': assessmentId,
       'x-cadmus-url': window.location.href,
@@ -763,7 +763,7 @@ function cadmusAction(action, options) {
   async function importMCQ(opts) {
     const { tenant, assessmentId } = parseCadmusUrl();
     const hdrs = {
-      'x-cadmus-role': 'lecturer',
+      'x-cadmus-role': 'AUTHOR',
       'x-cadmus-tenant': tenant,
       'x-cadmus-assessment': assessmentId,
       'x-cadmus-url': window.location.href,
@@ -892,7 +892,7 @@ function cadmusAction(action, options) {
   async function importMatching(opts) {
     const { tenant, assessmentId } = parseCadmusUrl();
     const hdrs = {
-      'x-cadmus-role': 'lecturer',
+      'x-cadmus-role': 'AUTHOR',
       'x-cadmus-tenant': tenant,
       'x-cadmus-assessment': assessmentId,
       'x-cadmus-url': window.location.href,
@@ -1027,7 +1027,7 @@ function cadmusAction(action, options) {
   async function importShort(opts) {
     const { tenant, assessmentId } = parseCadmusUrl();
     const hdrs = {
-      'x-cadmus-role': 'lecturer',
+      'x-cadmus-role': 'AUTHOR',
       'x-cadmus-tenant': tenant,
       'x-cadmus-assessment': assessmentId,
       'x-cadmus-url': window.location.href,
