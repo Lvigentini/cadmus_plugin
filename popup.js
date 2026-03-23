@@ -1418,7 +1418,6 @@ const INTERNAL_FIELDS = [
   { key: 'explanation', label: 'Explanation',  required: false },
   { key: 'bloom',       label: 'Bloom Level', required: false },
   { key: 'diff',        label: 'Difficulty',  required: false },
-  { key: 'source',      label: 'Source',      required: false },
 ];
 
 // Columns that should be auto-checked as tag sources
