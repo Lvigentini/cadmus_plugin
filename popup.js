@@ -797,8 +797,8 @@ function cadmusAction(action, options) {
         content: p.right,
       }));
 
-      // correctValues: target identifiers in order of sources
-      const correctValues = targetSet.map(t => t.identifier);
+      // correctValues: space-separated "sourceId targetId" pairs
+      const correctValues = sourceSet.map((s, i) => `${s.identifier} ${targetSet[i].identifier}`);
 
       const totalPoints = opts.points * q.pairs.length;
 
