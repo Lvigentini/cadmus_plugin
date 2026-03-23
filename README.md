@@ -51,10 +51,10 @@ A Chrome extension that enhances the [Cadmus](https://cadmus.io) question librar
 
 ## Installation
 
-1. Clone or download this repository
+1. Download the latest ZIP from [**Releases**](https://github.com/Lvigentini/cadmus_plugin/releases) and extract it to your preferred location (recommended: your user folder, e.g. `~/cadmus-plugin`)
 2. Open `chrome://extensions` in Chrome
 3. Enable **Developer mode** (toggle in the top-right)
-4. Click **Load unpacked** and select the extension folder
+4. Click **Load unpacked** and select the extracted extension folder
 5. Pin the extension to your toolbar for easy access
 
 ---
