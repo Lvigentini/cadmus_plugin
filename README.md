@@ -13,8 +13,11 @@ A Chrome extension that enhances the [Cadmus](https://cadmus.io) question librar
   - [Import Questions](#import-questions)
   - [Column Mapping](#column-mapping)
   - [Automatic Tagging](#automatic-tagging)
+  - [Duplicate Detection](#duplicate-detection)
+  - [Per-Type Import](#per-type-import)
   - [Export Questions](#export-questions)
   - [Bulk Edit](#bulk-edit)
+  - [Fix Matching Questions](#fix-matching-questions)
   - [Delete](#delete)
 - [Excel Format](#excel-format)
   - [Column Reference](#column-reference)
@@ -94,9 +97,10 @@ The log panel at the bottom shows real-time progress for all operations.
 
 After loading an Excel file, a mapping panel appears with:
 
-- **Field dropdowns** for each internal field (#, Type, Question, Answers, Explanation, Bloom Level, Difficulty, Source) — auto-detected from column headers, adjustable via dropdown
+- **Field dropdowns** for each internal field (#, Type, Question, Answers, Explanation, Bloom Level, Difficulty) — auto-detected from column headers, adjustable via dropdown
 - **Sample values** from the first data row shown beside each dropdown for quick verification
 - **Required fields** marked with a red asterisk — parsing will not proceed without them
+- **Tag columns** — only unmapped/extra columns appear as tag checkbox candidates (columns already mapped to fields like #, Type, Question are excluded). Each candidate shows a preview of unique values from the first 5 rows
 
 ### Automatic Tagging
 
@@ -104,12 +108,25 @@ On import, the extension applies tags and metadata in batch:
 
 | What | How | Example |
 |------|-----|---------|
-| **Tag columns** | Any column checked in the mapping panel | Topic, Source, or any custom column |
+| **Tag columns** | Any unmapped column checked in the mapping panel | Topic, Source, or any custom column |
 | **Bloom level** | From the Bloom Level column | `bloom-remember`, `bloom-apply`, `bloom-analyze` |
 | **Difficulty** | From the Difficulty column (decorative chars stripped) | `EASY`, `MEDIUM`, `HARD` |
-| **Filename** | From the imported file's name | `week01_mixedQs` |
+| **Filename** | Automatic — from the imported file's name (no extension) | `week01_mixedQs` |
 
 Tags are applied via the `AppendTagsForQuestions` mutation (additive — never removes existing tags). Difficulty is set via `UpdateQuestionAttributes`.
+
+### Duplicate Detection
+
+When clicking **Import All Questions** or a per-type import button, the extension scans the existing library for potential duplicates before importing:
+
+- **Jaccard word-overlap similarity** (70% threshold) — compares word sets between incoming and existing prompts, catching reworded questions while avoiding false positives
+- **Interactive review panel** — if matches are found, shows incoming vs existing questions side-by-side with similarity percentage
+- **Three actions per match**: Update existing (overwrite with new answer data), Create new (import anyway), or Skip
+- **No interruption when clean** — if no duplicates are found, import proceeds directly
+
+### Per-Type Import
+
+Each question type card has its own import button (e.g. "Import MCQ Only") for selective importing from mixed files. Duplicate detection runs for the selected type only.
 
 ### Export Questions
 
@@ -183,6 +200,16 @@ Select questions using the checkboxes in the Cadmus library table, then:
 - **MCQ** — set points and shuffle choices
 - **Matching** — set points and shuffle pairs
 - **Short Answer** — set points and similarity threshold (auto-marking)
+
+### Fix Matching Questions
+
+A repair tool in the **Bulk Edit → Matching** card that fixes matching questions with broken data structures. It detects old-format questions (where `sourceSet`/`targetSet` were inverted) and rebuilds them with the correct Cadmus data model:
+
+- `sourceSet` = answers (right side), identifiers: `right_1`, `right_2`, ...
+- `targetSet` = prompts (left side), identifiers: `left_1`, `left_2`, ...
+- `correctValues` = `["left_1 right_1", "left_2 right_2", ...]`
+
+Works on selected questions or all matching questions in the library. Safe to run multiple times — skips questions that already use the correct model.
 
 ### Delete
 
@@ -297,6 +324,7 @@ After making changes to the source files:
     ├── screenshot-import-tab.png
     ├── screenshot-column-mapping.png
     ├── screenshot-bulk-edit-tab.png
+    ├── screenshot-export-tab.png
     └── screenshot-delete-tab.png
 ```
 
@@ -310,6 +338,8 @@ After making changes to the source files:
 - **React Fiber traversal** — extracts TanStack table state for selected-row detection
 - **SheetJS** — bundled locally for browser-side Excel parsing and export (no CDN dependency)
 - **Multi-format export** — Excel via SheetJS, CSV/JSON/QTI XML via string builders; all formats use Blob + hidden anchor download
+- **Matching data model** — Cadmus uses an inverted naming convention: `sourceSet` = answers (right side, `right_N`), `targetSet` = prompts (left side, `left_N`), `correctValues` = `"left_N right_N"` pairs
+- **Duplicate detection** — Jaccard word-overlap similarity (70% threshold) against TanStack table data; no extra API calls for the scan
 
 ---
 
