@@ -861,22 +861,15 @@ function cadmusAction(action, options) {
     // ── Duplicate detection ──
     const libIndex = fetchLibraryIndex();
 
-    // Build a pool of all right-side answers across all matching questions
-    // for use as distractors (Cadmus shows all targets to students at once)
-    const allRightAnswers = [];
-    for (const mq of questions) {
-      for (const pair of mq.pairs) {
-        const val = pair.right.trim();
-        if (val && !allRightAnswers.includes(val)) allRightAnswers.push(val);
-      }
-    }
-
     for (let idx = 0; idx < questions.length; idx++) {
       const q = questions[idx];
       const shortPrompt = q.prompt.substring(0, 200);
       const promptDoc = simplePromptDoc(q.prompt);
 
       // Build source and target sets (correct pairs)
+      // No explicit distractors needed — in matching questions all targets
+      // are visible to students at once, so each target naturally serves
+      // as a distractor for every other prompt
       const sourceSet = q.pairs.map((p, i) => ({
         identifier: `source_${nanoid(8)}`,
         content: p.left,
@@ -888,18 +881,6 @@ function cadmusAction(action, options) {
 
       // correctValues: space-separated "sourceId targetId" pairs
       const correctValues = sourceSet.map((s, i) => `${s.identifier} ${targetSet[i].identifier}`);
-
-      // Add distractors from OTHER matching questions' right-side answers
-      const correctTexts = new Set(q.pairs.map(p => p.right.trim().toLowerCase()));
-      const distractors = allRightAnswers
-        .filter(ans => !correctTexts.has(ans.toLowerCase()))
-        .map(ans => ({
-          identifier: `distractor_${nanoid(8)}`,
-          content: ans,
-        }));
-
-      // Full targetSet = correct targets + distractors
-      const fullTargetSet = [...targetSet, ...distractors];
 
       const totalPoints = opts.points * q.pairs.length;
 
@@ -917,7 +898,7 @@ function cadmusAction(action, options) {
         },
         matchInteraction: {
           sourceSet: sourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
-          targetSet: fullTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
+          targetSet: targetSet.map(t => ({ identifier: t.identifier, content: t.content })),
         },
       }];
 
@@ -939,7 +920,7 @@ function cadmusAction(action, options) {
         if (ud.errors) { logs.push({ msg: `Matching Q${idx + 1} update failed: ${ud.errors[0].message}`, cls: 'err' }); failed++; }
         else {
           createdIds.push({ id: eq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-          logs.push({ msg: `Matching Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs + ${distractors.length} distractors)`, cls: 'ok' });
+          logs.push({ msg: `Matching Q${idx + 1} updated (duplicate) — ${eq.shortPrompt?.substring(0, 40)} (${q.pairs.length} pairs)`, cls: 'ok' });
           updated++;
         }
         continue;
@@ -969,7 +950,7 @@ function cadmusAction(action, options) {
       } else {
         const cq = res?.data?.createQuestion;
         if (cq?.id) createdIds.push({ id: cq.id, tags: q.tags || [], bloom: q.bloom || '', difficulty: q.difficulty || '' });
-        logs.push({ msg: `Matching Q${idx + 1} created — #${cq?.libraryId} (${q.pairs.length} pairs + ${distractors.length} distractors, ${totalPoints} pts)`, cls: 'ok' });
+        logs.push({ msg: `Matching Q${idx + 1} created — #${cq?.libraryId} (${q.pairs.length} pairs, ${totalPoints} pts)`, cls: 'ok' });
         created++;
       }
     }
@@ -1127,7 +1108,7 @@ function cadmusAction(action, options) {
     const logs = [];
     let fixed = 0, skipped = 0, failed = 0;
 
-    // Phase 1: Fetch all matching questions to collect the distractor pool
+    // Fetch all matching questions
     const fetchedQuestions = [];
     for (let i = 0; i < rows.length; i++) {
       const qId = rows[i].original.id;
@@ -1140,31 +1121,10 @@ function cadmusAction(action, options) {
       fetchedQuestions.push(fd.data.question);
     }
 
-    // Build pool of all right-side (target) answer texts across all matching questions
-    const allTargetTexts = [];
-    for (const q of fetchedQuestions) {
-      const field = q.body?.fields?.[0];
-      const inter = field?.interaction;
-      if (!inter?.sourceSet || !inter?.targetSet) continue;
-      // Extract correct target texts from correctValues pairs
-      const cv = field.response?.correctValues || [];
-      for (const pair of cv) {
-        const parts = pair.split(' ');
-        if (parts.length === 2) {
-          const tgt = inter.targetSet.find(t => t.identifier === parts[1]);
-          if (tgt && !allTargetTexts.includes(tgt.content.trim())) {
-            allTargetTexts.push(tgt.content.trim());
-          }
-        }
-      }
-      // Also include targets matched by index (for broken questions without valid pairs)
-      for (const tgt of inter.targetSet) {
-        const text = tgt.content.trim();
-        if (text && !allTargetTexts.includes(text)) allTargetTexts.push(text);
-      }
-    }
-
-    // Phase 2: Fix each question
+    // Fix each question: repair correctValues and strip stale distractors
+    // No explicit distractors needed — in matching questions all targets are
+    // visible to students at once, so each target naturally serves as a
+    // distractor for every other prompt
     for (const q of fetchedQuestions) {
       const field = q.body?.fields?.[0];
       const inter = field?.interaction;
@@ -1181,41 +1141,34 @@ function cadmusAction(action, options) {
       // Check if correctValues are broken (no space = bare target IDs)
       const needsRepair = cv.length === 0 || cv.some(v => !v.includes(' '));
 
+      // Also check for stale distractors that shouldn't be there
+      const correctTargetIds = new Set();
+      if (!needsRepair) {
+        for (const v of cv) { const parts = v.split(' '); if (parts[1]) correctTargetIds.add(parts[1]); }
+      } else {
+        sourceSet.forEach((_, i) => { if (originalTargetSet[i]) correctTargetIds.add(originalTargetSet[i].identifier); });
+      }
+      const hasStaleDistractors = originalTargetSet.some(t => !correctTargetIds.has(t.identifier));
+
+      if (!needsRepair && !hasStaleDistractors) {
+        logs.push({ msg: `${q.shortPrompt?.substring(0, 40)} — already correct, skipped`, cls: 'ok' });
+        skipped++;
+        continue;
+      }
+
       // Rebuild correctValues as "sourceId targetId" pairs
       let newCorrectValues;
-      let correctTargetIds;
       if (needsRepair) {
-        // Positional matching: source[i] → target[i]
         newCorrectValues = sourceSet.map((s, i) => {
           const t = originalTargetSet[i];
           return t ? `${s.identifier} ${t.identifier}` : null;
         }).filter(Boolean);
-        correctTargetIds = new Set(sourceSet.map((_, i) => originalTargetSet[i]?.identifier).filter(Boolean));
-        logs.push({ msg: `${q.shortPrompt?.substring(0, 40)} — repaired ${newCorrectValues.length} correct pairings`, cls: 'ok' });
       } else {
         newCorrectValues = cv;
-        correctTargetIds = new Set(cv.map(v => v.split(' ')[1]));
       }
 
-      // Build correct target texts for distractor exclusion
-      const correctTargetTexts = new Set();
-      for (const tId of correctTargetIds) {
-        const t = originalTargetSet.find(t => t.identifier === tId);
-        if (t) correctTargetTexts.add(t.content.trim().toLowerCase());
-      }
-
-      // Build new distractor list from other questions' targets
-      const existingDistractorIds = new Set(
-        originalTargetSet.filter(t => !correctTargetIds.has(t.identifier)).map(t => t.content.trim().toLowerCase())
-      );
-
-      const newDistractors = allTargetTexts
-        .filter(text => !correctTargetTexts.has(text.toLowerCase()) && !existingDistractorIds.has(text.toLowerCase()))
-        .map(text => ({ identifier: `distractor_${nanoid(8)}`, content: text }));
-
-      // Keep only correct targets + new distractors (removes old broken distractors)
-      const correctTargets = originalTargetSet.filter(t => correctTargetIds.has(t.identifier));
-      const fullTargetSet = [...correctTargets, ...newDistractors];
+      // Keep only correct targets (strip any distractors)
+      const cleanTargetSet = originalTargetSet.filter(t => correctTargetIds.has(t.identifier));
 
       // Update the question
       const input = {
@@ -1233,7 +1186,7 @@ function cadmusAction(action, options) {
             },
             matchInteraction: {
               sourceSet: sourceSet.map(s => ({ identifier: s.identifier, content: s.content })),
-              targetSet: fullTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
+              targetSet: cleanTargetSet.map(t => ({ identifier: t.identifier, content: t.content })),
             },
           }],
         },
@@ -1244,7 +1197,11 @@ function cadmusAction(action, options) {
         logs.push({ msg: `Update failed for ${q.shortPrompt?.substring(0, 40)}: ${ud.errors[0].message}`, cls: 'err' });
         failed++;
       } else {
-        logs.push({ msg: `Fixed ${q.shortPrompt?.substring(0, 40)} — ${newCorrectValues.length} pairs, ${newDistractors.length} distractors added`, cls: 'ok' });
+        const removedCount = originalTargetSet.length - cleanTargetSet.length;
+        const parts = [];
+        if (needsRepair) parts.push(`repaired ${newCorrectValues.length} pairings`);
+        if (removedCount > 0) parts.push(`removed ${removedCount} stale distractor(s)`);
+        logs.push({ msg: `Fixed ${q.shortPrompt?.substring(0, 40)} — ${parts.join(', ')}`, cls: 'ok' });
         fixed++;
       }
     }
