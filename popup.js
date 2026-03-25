@@ -574,13 +574,12 @@ function cadmusAction(action, options) {
 
     const buildFields = (blanks, distractorPool, qIdx) =>
       blanks.map((blank, i) => {
-        const correctTexts = blank.answers.map(a => a.toLowerCase());
-        const choices = blank.answers.map(text => ({
-          identifier: nanoid(),
-          content: text,
-        }));
-        // All provided answers are correct
-        const correctIds = choices.map(c => c.identifier);
+        // First answer is the correct one; extras are discarded (not used as distractors)
+        const firstAnswer = blank.answers[0];
+        const correctTexts = [firstAnswer.toLowerCase()];
+        const correctChoice = { identifier: nanoid(), content: firstAnswer };
+        const choices = [correctChoice];
+        const correctIds = [correctChoice.identifier];
 
         // ── Add distractors from other questions ──
         // Prefer same blank position, then fall back to any position
@@ -640,13 +639,14 @@ function cadmusAction(action, options) {
 
     // ── Build distractor pool from all questions ──
     // Keyed by blank position (0, 1, …), each entry = { text, qIdx }
+    // Only the first (correct) answer per blank is pooled as a potential distractor
     const distractorPool = {};
     for (let qi = 0; qi < questions.length; qi++) {
       const q = questions[qi];
       for (let bi = 0; bi < q.blanks.length; bi++) {
         if (!distractorPool[bi]) distractorPool[bi] = [];
-        for (const ans of q.blanks[bi].answers) {
-          distractorPool[bi].push({ text: ans, qIdx: qi });
+        if (q.blanks[bi].answers.length > 0) {
+          distractorPool[bi].push({ text: q.blanks[bi].answers[0], qIdx: qi });
         }
       }
     }
