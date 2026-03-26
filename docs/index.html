@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cadmus Question Library Tools — Install &amp; Update</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #333; background: #fafafa; line-height: 1.6;
+    }
+    .hero {
+      background: linear-gradient(135deg, #7b1fa2 0%, #512da8 100%);
+      color: #fff; padding: 48px 24px; text-align: center;
+    }
+    .hero h1 { font-size: 28px; margin-bottom: 8px; }
+    .hero p { font-size: 15px; opacity: 0.9; max-width: 540px; margin: 0 auto; }
+    .container { max-width: 640px; margin: 0 auto; padding: 32px 24px; }
+    h2 {
+      font-size: 20px; color: #7b1fa2; margin: 32px 0 12px;
+      padding-bottom: 6px; border-bottom: 2px solid #e0e0e0;
+    }
+    h2:first-child { margin-top: 0; }
+    ol { padding-left: 24px; margin: 12px 0; }
+    li { margin-bottom: 10px; }
+    code {
+      background: #f5f0fa; color: #6a1b9a; padding: 2px 6px;
+      border-radius: 3px; font-size: 13px;
+    }
+    .btn {
+      display: inline-block; margin: 16px 0;
+      padding: 12px 28px; background: #7b1fa2; color: #fff;
+      text-decoration: none; border-radius: 6px; font-weight: 600;
+      font-size: 15px; transition: background 0.2s;
+    }
+    .btn:hover { background: #6a1b9a; }
+    .note {
+      background: #e3f2fd; border-left: 4px solid #1565c0;
+      padding: 12px 16px; margin: 16px 0; border-radius: 4px;
+      font-size: 13px; color: #1565c0;
+    }
+    .version-badge {
+      display: inline-block; background: rgba(255,255,255,0.2);
+      padding: 4px 12px; border-radius: 20px; font-size: 13px;
+      margin-top: 12px;
+    }
+    #latest-version { font-weight: 600; }
+    footer {
+      text-align: center; padding: 24px; font-size: 12px; color: #999;
+      border-top: 1px solid #e0e0e0; margin-top: 32px;
+    }
+    footer a { color: #7b1fa2; }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <h1>Cadmus Question Library Tools</h1>
+    <p>Chrome extension for importing, editing, exporting, and managing question banks in Cadmus assessments.</p>
+    <div class="version-badge">Latest: <span id="latest-version">loading...</span></div>
+  </div>
+
+  <div class="container">
+    <h2>Install (first time)</h2>
+    <ol>
+      <li>Download the latest <code>.zip</code> from the Releases page:
+        <br><a class="btn" href="https://github.com/Lvigentini/cadmus_plugin/releases/latest" id="download-link">Download latest release</a>
+      </li>
+      <li>Extract the ZIP to your preferred location<br>
+        <span style="font-size:13px;color:#777;">Recommended: your user folder, e.g. <code>~/cadmus-plugin</code></span>
+      </li>
+      <li>Open <code>chrome://extensions</code> in Chrome</li>
+      <li>Enable <strong>Developer mode</strong> (toggle in the top-right corner)</li>
+      <li>Click <strong>Load unpacked</strong> and select the extracted extension folder</li>
+      <li>Pin the extension to your toolbar for easy access</li>
+    </ol>
+
+    <h2>Update (existing install)</h2>
+    <ol>
+      <li>Download the latest <code>.zip</code> from the <a href="https://github.com/Lvigentini/cadmus_plugin/releases/latest">Releases page</a></li>
+      <li>Extract the ZIP over your existing extension folder, replacing all files</li>
+      <li>Open <code>chrome://extensions</code></li>
+      <li>Find <strong>Cadmus Question Library Tools</strong> and click the <strong>reload</strong> icon (circular arrow)</li>
+      <li>Done — the extension is now running the latest version</li>
+    </ol>
+
+    <div class="note">
+      The extension checks for updates automatically when you open the popup. If a newer version is available, you will see a blue banner at the top linking back to this page.
+    </div>
+
+    <h2>Changelog</h2>
+    <p>See the full release history and notes on the <a href="https://github.com/Lvigentini/cadmus_plugin/releases">GitHub Releases page</a>.</p>
+
+    <h2>Source code</h2>
+    <p>The extension is open-source: <a href="https://github.com/Lvigentini/cadmus_plugin">github.com/Lvigentini/cadmus_plugin</a></p>
+  </div>
+
+  <footer>
+    Cadmus Question Library Tools &mdash; <a href="https://github.com/Lvigentini/cadmus_plugin">GitHub</a>
+  </footer>
+
+  <script>
+    // Fetch latest version tag to display on the page
+    fetch('https://api.github.com/repos/Lvigentini/cadmus_plugin/releases/latest', {
+      headers: { Accept: 'application/vnd.github.v3+json' }
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.tag_name) {
+          document.getElementById('latest-version').textContent = d.tag_name;
+        }
+      })
+      .catch(() => {
+        document.getElementById('latest-version').textContent = 'see releases';
+      });
+  </script>
+</body>
+</html>

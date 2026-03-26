@@ -10,6 +10,37 @@ const log = (msg, cls = '') => {
   el.scrollTop = el.scrollHeight;
 };
 
+// ── Version check ───────────────────────────────────────────────────────────
+async function checkForUpdate() {
+  try {
+    const resp = await fetch(
+      'https://api.github.com/repos/Lvigentini/cadmus_plugin/releases/latest',
+      { headers: { Accept: 'application/vnd.github.v3+json' } }
+    );
+    if (!resp.ok) return;
+    const release = await resp.json();
+    const latest = release.tag_name.replace(/^v/, '');
+    const current = chrome.runtime.getManifest().version;
+    if (latest !== current && isNewer(latest, current)) {
+      document.getElementById('update-text').textContent =
+        `v${latest} available (you have v${current})`;
+      document.getElementById('update-link').href =
+        'https://lvigentini.github.io/cadmus_plugin/';
+      document.getElementById('update-banner').style.display = 'flex';
+    }
+  } catch (_) { /* silent — network errors, rate limits */ }
+}
+
+function isNewer(latest, current) {
+  const a = latest.split('.').map(Number);
+  const b = current.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) > (b[i] || 0)) return true;
+    if ((a[i] || 0) < (b[i] || 0)) return false;
+  }
+  return false;
+}
+
 // ── Find the Cadmus tab (works from both popup and window mode) ─────────────
 let cadmusTabId = null;
 
@@ -2720,3 +2751,4 @@ document.getElementById('btn-review-confirm')?.addEventListener('click', async (
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 checkContext();
+checkForUpdate();

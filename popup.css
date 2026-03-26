@@ -26,6 +26,26 @@ body {
 .status--connected .status-icon::before { background: #43a047; }
 .status--disconnected .status-icon::before { background: #ef6c00; }
 
+/* ── Update banner ── */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 18px;
+  background: #e3f2fd;
+  border-bottom: 1px solid #90caf9;
+  font-size: 12px;
+  color: #1565c0;
+}
+.update-banner a {
+  font-weight: 600;
+  color: #1565c0;
+  text-decoration: underline;
+  white-space: nowrap;
+  margin-left: 12px;
+}
+.update-banner a:hover { color: #0d47a1; }
+
 /* ── Tab bar ── */
 .tab-bar {
   display: flex;
