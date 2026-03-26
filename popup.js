@@ -572,7 +572,7 @@ function cadmusAction(action, options) {
       });
     };
 
-    const buildFields = (blanks, distractorPool, qIdx) =>
+    const buildFields = (blanks, distractorPool, qIdx, explicitDistractors) =>
       blanks.map((blank, i) => {
         // First answer is the correct one; extras are discarded (not used as distractors)
         const firstAnswer = blank.answers[0];
@@ -581,32 +581,44 @@ function cadmusAction(action, options) {
         const choices = [correctChoice];
         const correctIds = [correctChoice.identifier];
 
-        // ── Add distractors from other questions ──
-        // Prefer same blank position, then fall back to any position
-        const samePos = (distractorPool[i] || [])
-          .filter(d => d.qIdx !== qIdx && !correctTexts.includes(d.text.toLowerCase()));
-        const anyPos = Object.values(distractorPool).flat()
-          .filter(d => d.qIdx !== qIdx && !correctTexts.includes(d.text.toLowerCase()));
-
         const usedTexts = new Set(correctTexts);
-        const pickDistractors = (pool, count) => {
-          const picked = [];
-          // Shuffle pool for variety
-          const shuffled = [...pool].sort(() => Math.random() - 0.5);
-          for (const d of shuffled) {
-            if (picked.length >= count) break;
-            const key = d.text.toLowerCase();
+
+        // ── Add distractors ──
+        // If explicit distractors provided (from ---DISTRACTORS--- section), use those
+        // Otherwise fall back to cross-pollination from other questions
+        let distractors = [];
+
+        if (explicitDistractors && explicitDistractors.length > 0) {
+          for (const dText of explicitDistractors) {
+            const key = dText.toLowerCase();
             if (usedTexts.has(key)) continue;
             usedTexts.add(key);
-            picked.push(d.text);
+            distractors.push(dText);
           }
-          return picked;
-        };
+        } else {
+          // Cross-pollinate from other questions in the file
+          const samePos = (distractorPool[i] || [])
+            .filter(d => d.qIdx !== qIdx && !correctTexts.includes(d.text.toLowerCase()));
+          const anyPos = Object.values(distractorPool).flat()
+            .filter(d => d.qIdx !== qIdx && !correctTexts.includes(d.text.toLowerCase()));
 
-        // Try 2 from same-position pool first, then top up from any-position
-        let distractors = pickDistractors(samePos, 2);
-        if (distractors.length < 2) {
-          distractors = distractors.concat(pickDistractors(anyPos, 2 - distractors.length));
+          const pickDistractors = (pool, count) => {
+            const picked = [];
+            const shuffled = [...pool].sort(() => Math.random() - 0.5);
+            for (const d of shuffled) {
+              if (picked.length >= count) break;
+              const key = d.text.toLowerCase();
+              if (usedTexts.has(key)) continue;
+              usedTexts.add(key);
+              picked.push(d.text);
+            }
+            return picked;
+          };
+
+          distractors = pickDistractors(samePos, 2);
+          if (distractors.length < 2) {
+            distractors = distractors.concat(pickDistractors(anyPos, 2 - distractors.length));
+          }
         }
 
         for (const dText of distractors) {
@@ -675,7 +687,7 @@ function cadmusAction(action, options) {
       const blankUUIDs = q.blanks.map(() => uuid());
       const shortPrompt = prompt.substring(0, 200);
       const promptDoc = buildPromptDoc(prompt, blankUUIDs);
-      const fields = buildFields(q.blanks, distractorPool, idx);
+      const fields = buildFields(q.blanks, distractorPool, idx, q.explicitDistractors);
 
       const pointsPerBlank = opts.points;
       const totalPoints = pointsPerBlank * q.blanks.length;
@@ -922,12 +934,20 @@ function cadmusAction(action, options) {
         identifier: `right_${i + 1}`,
         content: p.right,
       }));
+      // Append explicit distractors as extra sourceSet entries (no matching target)
+      const distractors = q.distractors || [];
+      for (let di = 0; di < distractors.length; di++) {
+        sourceSet.push({
+          identifier: `right_${q.pairs.length + di + 1}`,
+          content: distractors[di],
+        });
+      }
       const targetSet = q.pairs.map((p, i) => ({
         identifier: `left_${i + 1}`,
         content: p.left,
       }));
 
-      // correctValues: "leftId rightId" pairs
+      // correctValues: "leftId rightId" pairs — only for actual pairs, not distractors
       const correctValues = targetSet.map((t, i) => `${t.identifier} ${sourceSet[i].identifier}`);
 
       const totalPoints = opts.points * q.pairs.length;
@@ -963,6 +983,14 @@ function cadmusAction(action, options) {
             identifier: `right_${pi + 1}`,
             content: p.right,
           }));
+          // Append explicit distractors as extra sourceSet entries
+          const updDistractors = q.distractors || [];
+          for (let di = 0; di < updDistractors.length; di++) {
+            updSourceSet.push({
+              identifier: `right_${q.pairs.length + di + 1}`,
+              content: updDistractors[di],
+            });
+          }
           const updTargetSet = q.pairs.map((p, pi) => ({
             identifier: `left_${pi + 1}`,
             content: p.left,
@@ -1751,8 +1779,14 @@ function parseExcelAll(rows, customColMap, tagColumns) {
     const num = get('num');
     const questionText = get('question');
     const type = get('type');
-    const answersRaw = get('answers');
+    const answersRawFull = get('answers');
     const explanation = get('explanation');
+
+    // Split at ---DISTRACTORS--- separator if present
+    const distSep = '---DISTRACTORS---';
+    const distIdx = answersRawFull.indexOf(distSep);
+    const answersRaw = distIdx === -1 ? answersRawFull : answersRawFull.substring(0, distIdx).trim();
+    const distractorsRaw = distIdx === -1 ? '' : answersRawFull.substring(distIdx + distSep.length).trim();
 
     if (!num || !questionText) continue;
 
@@ -1790,10 +1824,16 @@ function parseExcelAll(rows, customColMap, tagColumns) {
         prompt = first;
       }
 
+      // Explicit distractors from ---DISTRACTORS--- section
+      const explicitDistractors = distractorsRaw
+        ? distractorsRaw.split(/[;\n]/).map(d => d.trim()).filter(Boolean)
+        : [];
+
       result.fib.push({
         ident: `XLSX_Q${num}`,
         prompt,
         blanks: groups.map(g => ({ answers: g })),
+        explicitDistractors,
         points: nBlanks,
         feedback: explanation || '',
         tags,
@@ -1833,6 +1873,14 @@ function parseExcelAll(rows, customColMap, tagColumns) {
         return { text, correct: isCorrect };
       });
 
+      // Append explicit distractors as additional wrong choices
+      if (distractorsRaw) {
+        const extraWrong = distractorsRaw.split(/[;\n]/).map(d => d.trim()).filter(Boolean);
+        for (const dText of extraWrong) {
+          choices.push({ text: dText.replace(/^[A-Za-z][.)]\s*/, ''), correct: false });
+        }
+      }
+
       result.mcq.push({
         prompt: questionText,
         choices,
@@ -1857,11 +1905,18 @@ function parseExcelAll(rows, customColMap, tagColumns) {
         }
       }
 
+      // Explicit distractors = extra right-side options with no correct pairing
+      const matchDistractors = distractorsRaw
+        ? distractorsRaw.split(/\n|\r\n?/).map(d => d.trim()).filter(Boolean)
+        : [];
+
       if (pairs.length > 0) {
         result.matching.push({
           prompt: questionText,
           pairs,
+          distractors: matchDistractors,
           feedback: explanation || '',
+          tags,
           topic: get('topic') || '',
           bloom: get('bloom') || '',
           difficulty: normaliseDifficulty(get('diff')),

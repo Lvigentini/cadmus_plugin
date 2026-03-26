@@ -163,6 +163,29 @@ Each export fetches full question data via GraphQL, including prompt text, answe
 | **Fill-in-Blank** | Semicolon-separated accepted answers: `nephron; urine` |
 | **Short Answer** | Semicolon-separated key terms: `cushioning; buoyancy` |
 
+#### Explicit distractors
+
+Any question type can include explicit distractors by adding a `---DISTRACTORS---` separator in the `Answer / Details` cell. Everything above the separator is treated as correct answers/pairs; everything below is added as wrong options:
+
+```
+Heart → Pumps blood
+Liver → Filters toxins
+Kidney → Filters blood
+---DISTRACTORS---
+Spleen
+Appendix
+Gall bladder
+```
+
+| Type | How distractors are used |
+|------|--------------------------|
+| **Matching** | Added as extra right-side options with no correct pairing — students see more options than prompts |
+| **MCQ** | Added as additional wrong choices alongside any already parsed from above the separator |
+| **FIB** | Used instead of cross-pollinated distractors from other questions in the file |
+| **Short Answer** | Not applicable (no distractor concept) |
+
+If no `---DISTRACTORS---` separator is present, existing behaviour is unchanged: FIB cross-pollinates from other questions, MCQ uses only the options listed, and matching has equal prompts and options.
+
 #### JSON structure
 
 The JSON export wraps questions in a metadata envelope:
