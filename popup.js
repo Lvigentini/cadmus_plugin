@@ -2678,6 +2678,8 @@ document.addEventListener('click', (e) => {
   const isActive = toggle.classList.toggle('active');
   toggle.setAttribute('aria-pressed', isActive);
   toggle.querySelector('.toggle-label-text').textContent = isActive ? 'On' : 'Off';
+  // Live re-render report charts when SC toggle changes
+  if (toggle.id === 'report-split-sc' && window._reportData) renderReport();
 });
 
 // Helper: read toggle state
@@ -2727,24 +2729,17 @@ document.addEventListener('click', (e) => {
     case 'chartGrades':
       (async () => {
         document.querySelectorAll('.btn').forEach(b => b.disabled = true);
-        const splitSC = isToggleOn('report-split-sc');
         log('Scanning grades…');
         try {
           const entries = await scrapeGrades();
           if (!entries || !entries.length) { log('No grades found — is the marking view open?', 'err'); return; }
-          // Auto-detect max marks from the page data (all rows should agree)
           const detectedMax = entries[0].maxMark || parseInt($('#report-max').value, 10) || 50;
-          $('#report-max').value = detectedMax;  // update the field so user sees it
-          const maxMarks = detectedMax;
+          $('#report-max').value = detectedMax;
           const scCount = entries.filter(e => e.specialCon).length;
-          log(`Found ${entries.length} submissions (max ${maxMarks}, ${scCount} special consideration)`, 'ok');
-          const output = document.getElementById('report-output');
-          output.innerHTML = '';
-          if (action === 'chartDistribution') {
-            renderDistributionChart(output, entries, maxMarks, splitSC);
-          } else {
-            renderGradeBreakdownChart(output, entries, maxMarks, splitSC);
-          }
+          log(`Found ${entries.length} submissions (max ${detectedMax}, ${scCount} special consideration)`, 'ok');
+          // Store scraped data for live re-rendering on toggle change
+          window._reportData = { entries, maxMarks: detectedMax, chartType: action };
+          renderReport();
         } catch (err) {
           log(`Chart failed: ${err.message}`, 'err');
         }
@@ -2988,70 +2983,95 @@ function gradeFor(mark, maxMarks) {
 }
 
 function computeStats(marks) {
-  if (!marks.length) return { mean: 0, median: 0, min: 0, max: 0, q1: 0, q3: 0, sorted: [] };
+  if (!marks.length) return { mean: 0, median: 0, min: 0, max: 0, sorted: [] };
   const sorted = [...marks].sort((a, b) => a - b);
   const mean = (marks.reduce((s, v) => s + v, 0) / marks.length).toFixed(1);
   const median = sorted[Math.floor(sorted.length / 2)];
-  const q1 = sorted[Math.floor(sorted.length * 0.25)];
-  const q3 = sorted[Math.floor(sorted.length * 0.75)];
-  return { mean, median, min: sorted[0], max: sorted[sorted.length - 1], q1, q3, sorted };
+  return { mean, median, min: sorted[0], max: sorted[sorted.length - 1], sorted };
 }
 
 function lightenColor(hex, amount) {
-  // Make a hex colour lighter by blending with white
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
-  const lr = Math.min(255, Math.round(r + (255 - r) * amount));
-  const lg = Math.min(255, Math.round(g + (255 - g) * amount));
-  const lb = Math.min(255, Math.round(b + (255 - b) * amount));
-  return `rgb(${lr},${lg},${lb})`;
+  return `rgb(${Math.min(255, Math.round(r + (255 - r) * amount))},${Math.min(255, Math.round(g + (255 - g) * amount))},${Math.min(255, Math.round(b + (255 - b) * amount))})`;
+}
+
+function addCopyButton(container, canvas) {
+  const btn = document.createElement('button');
+  btn.textContent = 'Copy chart';
+  btn.style.cssText = 'margin-top:8px;padding:4px 14px;border:1px solid #ccc;background:#fff;border-radius:4px;cursor:pointer;font-size:12px;color:#555;';
+  btn.addEventListener('click', async () => {
+    try {
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy chart'; }, 1500);
+    } catch (_) {
+      btn.textContent = 'Copy failed';
+      setTimeout(() => { btn.textContent = 'Copy chart'; }, 1500);
+    }
+  });
+  container.appendChild(btn);
+}
+
+function renderReport() {
+  const { entries, maxMarks, chartType } = window._reportData || {};
+  if (!entries) return;
+  const splitSC = isToggleOn('report-split-sc');
+  const output = document.getElementById('report-output');
+  output.innerHTML = '';
+  if (chartType === 'chartDistribution') {
+    renderDistributionChart(output, entries, maxMarks, splitSC);
+  } else {
+    renderGradeBreakdownChart(output, entries, maxMarks, splitSC);
+  }
+}
+
+function fmtCountPct(count, total) {
+  return `${count} (${((count / total) * 100).toFixed(0)}%)`;
 }
 
 function renderDistributionChart(container, entries, maxMarks, splitSC) {
   const allMarks = entries.map(e => e.mark);
+  const total = entries.length;
   const stats = computeStats(allMarks);
   const scCount = entries.filter(e => e.specialCon).length;
 
-  // Build frequency tables
   const freqAll = {}, freqReg = {}, freqSC = {};
   for (let i = 0; i <= maxMarks; i++) { freqAll[i] = 0; freqReg[i] = 0; freqSC[i] = 0; }
   for (const e of entries) {
     if (e.mark >= 0 && e.mark <= maxMarks) {
       freqAll[e.mark]++;
-      if (e.specialCon) freqSC[e.mark]++;
-      else freqReg[e.mark]++;
+      if (e.specialCon) freqSC[e.mark]++; else freqReg[e.mark]++;
     }
   }
 
   const labels = Object.keys(freqAll).map(Number).filter(k => freqAll[k] > 0);
   const maxCount = Math.max(...labels.map(k => splitSC ? Math.max(freqReg[k], freqSC[k]) : freqAll[k]), 1);
 
-  // Title + stats
   const title = document.createElement('div');
   title.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:2px;color:#1a1a2e;';
-  title.textContent = `Mark Distribution — ${entries.length} submissions (out of ${maxMarks})`;
+  title.textContent = `Mark Distribution — ${total} submissions (out of ${maxMarks})`;
 
   const statsEl = document.createElement('div');
   statsEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:12px;';
   let statsText = `Mean: ${stats.mean}  |  Median: ${stats.median}  |  Min: ${stats.min}  |  Max: ${stats.max}`;
-  if (splitSC) statsText += `  |  Special Con: ${scCount}`;
+  if (scCount > 0) statsText += `  |  Special Con: ${scCount}`;
   statsEl.textContent = statsText;
 
-  // Canvas
-  const slotW = splitSC ? Math.max(16, Math.min(40, Math.floor(580 / labels.length))) : Math.max(14, Math.min(32, Math.floor(580 / labels.length)));
+  const slotW = splitSC ? Math.max(18, Math.min(40, Math.floor(600 / labels.length))) : Math.max(14, Math.min(32, Math.floor(580 / labels.length)));
   const canvas = document.createElement('canvas');
   canvas.width = labels.length * slotW + 60;
-  canvas.height = 260;
+  canvas.height = 270;
   const ctx = canvas.getContext('2d');
-  const [padL, padB, padT] = [36, 36, 16];
+  const [padL, padB, padT] = [36, 36, 20];
   const chartW = canvas.width - padL - 10;
   const chartH = canvas.height - padB - padT;
 
   ctx.fillStyle = '#f8f9fb';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Grid
   for (let i = 0; i <= 5; i++) {
     const y = padT + chartH - (i / 5) * chartH;
     ctx.strokeStyle = '#dde'; ctx.lineWidth = 1;
@@ -3060,14 +3080,12 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
     ctx.fillText(Math.round((i / 5) * maxCount), padL - 4, y + 3);
   }
 
-  // Bars
   labels.forEach((label, i) => {
     const x = padL + i * slotW;
     const band = gradeFor(label, maxMarks);
 
     if (splitSC) {
       const halfW = (slotW - 2) / 2;
-      // Regular bar (left, solid)
       const regCount = freqReg[label];
       const regH = (regCount / maxCount) * chartH;
       const regY = padT + chartH - regH;
@@ -3077,7 +3095,6 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
         ctx.fillStyle = '#333'; ctx.font = '8px sans-serif'; ctx.textAlign = 'center';
         ctx.fillText(regCount, x + 1 + halfW / 2, regY - 2);
       }
-      // SC bar (right, lighter)
       const scCnt = freqSC[label];
       const scH = (scCnt / maxCount) * chartH;
       const scY = padT + chartH - scH;
@@ -3103,7 +3120,6 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
     ctx.fillText(label, x + slotW / 2, padT + chartH + 13);
   });
 
-  // Axes
   ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + chartH + 1); ctx.lineTo(padL + chartW, padT + chartH + 1); ctx.stroke();
   ctx.fillStyle = '#555'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
@@ -3119,102 +3135,56 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
     legend.appendChild(item);
   }
   if (splitSC) {
-    const regItem = document.createElement('span');
-    regItem.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#666;vertical-align:-1px;margin-right:3px"></span>Regular`;
-    const scItem = document.createElement('span');
-    scItem.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#bbb;vertical-align:-1px;margin-right:3px"></span>Special Con.`;
-    legend.appendChild(regItem);
-    legend.appendChild(scItem);
+    legend.innerHTML += `<span style="margin-left:6px">|</span><span><b style="margin-right:3px">■</b>Regular</span><span><b style="color:#bbb;margin-right:3px">■</b>Special Con.</span>`;
   }
 
   container.appendChild(title);
   container.appendChild(statsEl);
   container.appendChild(canvas);
   container.appendChild(legend);
-}
-
-function drawBoxPlot(ctx, marks, x, width, padT, chartH, maxMarks) {
-  if (!marks.length) return;
-  const s = computeStats(marks);
-  const mapY = (v) => padT + chartH - (v / maxMarks) * chartH;
-  const cx = x + width / 2;
-  const boxW = width * 0.5;
-
-  // Whiskers (min to Q1, Q3 to max)
-  ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(cx, mapY(s.min)); ctx.lineTo(cx, mapY(s.q1));
-  ctx.moveTo(cx, mapY(s.q3)); ctx.lineTo(cx, mapY(s.max));
-  ctx.stroke();
-  // Whisker caps
-  ctx.beginPath();
-  ctx.moveTo(cx - boxW / 3, mapY(s.min)); ctx.lineTo(cx + boxW / 3, mapY(s.min));
-  ctx.moveTo(cx - boxW / 3, mapY(s.max)); ctx.lineTo(cx + boxW / 3, mapY(s.max));
-  ctx.stroke();
-
-  // Box (Q1 to Q3)
-  const boxTop = mapY(s.q3);
-  const boxBot = mapY(s.q1);
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.fillRect(cx - boxW / 2, boxTop, boxW, boxBot - boxTop);
-  ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
-  ctx.strokeRect(cx - boxW / 2, boxTop, boxW, boxBot - boxTop);
-
-  // Median line
-  ctx.strokeStyle = '#d32f2f'; ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(cx - boxW / 2, mapY(s.median));
-  ctx.lineTo(cx + boxW / 2, mapY(s.median));
-  ctx.stroke();
+  addCopyButton(container, canvas);
 }
 
 function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
   const allMarks = entries.map(e => e.mark);
+  const total = entries.length;
   const stats = computeStats(allMarks);
+  const scTotal = entries.filter(e => e.specialCon).length;
+  const regTotal = total - scTotal;
 
-  // Bucket into bands — separate regular vs SC
-  const buckets = GRADE_BANDS.map(b => ({ ...b, reg: [], sc: [], all: [] }));
+  const buckets = GRADE_BANDS.map(b => ({ ...b, reg: 0, sc: 0, all: 0 }));
   for (const e of entries) {
     const band = gradeFor(e.mark, maxMarks);
     const bucket = buckets.find(b => b.label === band.label);
-    bucket.all.push(e.mark);
-    if (e.specialCon) bucket.sc.push(e.mark);
-    else bucket.reg.push(e.mark);
+    bucket.all++;
+    if (e.specialCon) bucket.sc++; else bucket.reg++;
   }
 
-  const maxCount = Math.max(...buckets.map(b => splitSC ? Math.max(b.reg.length, b.sc.length) : b.all.length), 1);
+  const maxCount = Math.max(...buckets.map(b => splitSC ? Math.max(b.reg, b.sc) : b.all), 1);
 
-  // Title + stats
   const title = document.createElement('div');
   title.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:2px;color:#1a1a2e;';
-  const scCount = entries.filter(e => e.specialCon).length;
-  title.textContent = `Grade Breakdown — ${entries.length} submissions` + (splitSC ? ` (${scCount} special con.)` : '');
+  title.textContent = `Grade Breakdown — ${total} submissions` + (scTotal > 0 ? ` (${scTotal} special con.)` : '');
 
   const statsEl = document.createElement('div');
   statsEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:12px;';
   statsEl.textContent = `Mean: ${stats.mean}  |  Median: ${stats.median}  |  Min: ${stats.min}  |  Max: ${stats.max}`;
 
-  // Canvas — two rows: bars on top, box plots below
   const bandW = splitSC ? 110 : 80;
   const canvas = document.createElement('canvas');
   canvas.width = buckets.length * bandW + 60;
-  canvas.height = splitSC ? 420 : 360;
+  canvas.height = 240;
   const ctx = canvas.getContext('2d');
-
-  // Top section: grouped bars
-  const [padL, padT] = [36, 16];
-  const barSectionH = 160;
-  const gapH = 30;
-  const boxSectionH = canvas.height - padT - barSectionH - gapH - 50;
+  const [padL, padT] = [36, 24];
+  const barH = 160;
   const chartW = canvas.width - padL - 10;
 
   ctx.fillStyle = '#f8f9fb';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // ── Bar chart section ──
-  // Grid for bars
+  // Grid
   for (let i = 0; i <= 4; i++) {
-    const y = padT + barSectionH - (i / 4) * barSectionH;
+    const y = padT + barH - (i / 4) * barH;
     ctx.strokeStyle = '#dde'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
     ctx.fillStyle = '#888'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
@@ -3226,116 +3196,66 @@ function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
 
     if (splitSC) {
       const halfW = (bandW - 16) / 2;
-      // Regular bar
-      const regH = bucket.reg.length > 0 ? (bucket.reg.length / maxCount) * barSectionH : 0;
-      const regY = padT + barSectionH - regH;
+      // Regular
+      const regH = bucket.reg > 0 ? (bucket.reg / maxCount) * barH : 0;
+      const regY = padT + barH - regH;
       ctx.fillStyle = bucket.color;
       ctx.fillRect(x + 8, regY, halfW, regH);
-      if (bucket.reg.length > 0) {
-        ctx.fillStyle = '#333'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(bucket.reg.length, x + 8 + halfW / 2, regY - 3);
+      if (bucket.reg > 0) {
+        ctx.fillStyle = '#333'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(fmtCountPct(bucket.reg, regTotal), x + 8 + halfW / 2, regY - 3);
       }
-      // SC bar
-      const scH = bucket.sc.length > 0 ? (bucket.sc.length / maxCount) * barSectionH : 0;
-      const scY = padT + barSectionH - scH;
+      // SC
+      const scH = bucket.sc > 0 ? (bucket.sc / maxCount) * barH : 0;
+      const scY = padT + barH - scH;
       ctx.fillStyle = lightenColor(bucket.color, 0.45);
       ctx.fillRect(x + 8 + halfW, scY, halfW, scH);
-      if (bucket.sc.length > 0) {
-        ctx.fillStyle = '#333'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(bucket.sc.length, x + 8 + halfW + halfW / 2, scY - 3);
+      if (bucket.sc > 0) {
+        ctx.fillStyle = '#333'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(fmtCountPct(bucket.sc, scTotal), x + 8 + halfW + halfW / 2, scY - 3);
       }
     } else {
-      const barH = bucket.all.length > 0 ? (bucket.all.length / maxCount) * barSectionH : 0;
-      const y = padT + barSectionH - barH;
+      const bH = bucket.all > 0 ? (bucket.all / maxCount) * barH : 0;
+      const y = padT + barH - bH;
       ctx.fillStyle = bucket.color;
-      ctx.fillRect(x + 8, y, bandW - 16, barH);
-      if (bucket.all.length > 0) {
-        ctx.fillStyle = '#333'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(bucket.all.length, x + bandW / 2, y - 4);
-        const pct = ((bucket.all.length / entries.length) * 100).toFixed(0);
-        ctx.fillStyle = '#888'; ctx.font = '10px sans-serif';
-        ctx.fillText(`${pct}%`, x + bandW / 2, y - 16 > padT ? y - 16 : y - 4);
+      ctx.fillRect(x + 8, y, bandW - 16, bH);
+      if (bucket.all > 0) {
+        ctx.fillStyle = '#333'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(fmtCountPct(bucket.all, total), x + bandW / 2, y - 4);
       }
     }
 
-    // Grade label below bars
-    const labelY = padT + barSectionH + 14;
+    // Label below
+    const labelY = padT + barH + 14;
     ctx.fillStyle = '#333'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(bucket.label, x + bandW / 2, labelY);
     ctx.fillStyle = '#777'; ctx.font = '9px sans-serif';
-    const rangeText = bucket.min === 0 ? '<50%' : `${bucket.min}%+`;
-    ctx.fillText(`${rangeText} (n=${bucket.all.length})`, x + bandW / 2, labelY + 13);
+    const rangeText = bucket.min === 0 ? '<50%' : `${bucket.min}–${bucket.min === 85 ? '100' : (bucket.min + 9)}%`;
+    ctx.fillText(rangeText, x + bandW / 2, labelY + 13);
   });
 
-  // Bar axes
+  // Axes
   ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + barSectionH + 1); ctx.lineTo(padL + chartW, padT + barSectionH + 1); ctx.stroke();
-
-  // ── Box plot section ──
-  const boxTop = padT + barSectionH + gapH;
-  // Section label
-  ctx.fillStyle = '#555'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
-  ctx.fillText('Mark spread within each grade band', padL, boxTop);
-
-  const boxAreaTop = boxTop + 10;
-  const boxAreaH = boxSectionH;
-
-  // Y-axis scale for box plots (0 to maxMarks)
-  for (let i = 0; i <= 4; i++) {
-    const markVal = Math.round((i / 4) * maxMarks);
-    const y = boxAreaTop + boxAreaH - (i / 4) * boxAreaH;
-    ctx.strokeStyle = '#eee'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
-    ctx.fillStyle = '#888'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
-    ctx.fillText(markVal, padL - 4, y + 3);
-  }
-
-  buckets.forEach((bucket, i) => {
-    const x = padL + i * bandW;
-    if (splitSC) {
-      const halfW = bandW / 2;
-      if (bucket.reg.length >= 2) drawBoxPlot(ctx, bucket.reg, x, halfW, boxAreaTop, boxAreaH, maxMarks);
-      if (bucket.sc.length >= 2) drawBoxPlot(ctx, bucket.sc, x + halfW, halfW, boxAreaTop, boxAreaH, maxMarks);
-      // Labels
-      if (bucket.reg.length > 0) {
-        ctx.fillStyle = '#555'; ctx.font = '8px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText('Reg', x + halfW / 2, boxAreaTop + boxAreaH + 12);
-      }
-      if (bucket.sc.length > 0) {
-        ctx.fillStyle = '#999'; ctx.font = '8px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText('SC', x + halfW + halfW / 2, boxAreaTop + boxAreaH + 12);
-      }
-    } else {
-      if (bucket.all.length >= 2) drawBoxPlot(ctx, bucket.all, x, bandW, boxAreaTop, boxAreaH, maxMarks);
-    }
-  });
-
-  // Box plot axes
-  ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(padL, boxAreaTop); ctx.lineTo(padL, boxAreaTop + boxAreaH + 1); ctx.lineTo(padL + chartW, boxAreaTop + boxAreaH + 1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + barH + 1); ctx.lineTo(padL + chartW, padT + barH + 1); ctx.stroke();
+  ctx.save(); ctx.translate(10, padT + barH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('# Students', 0, 0); ctx.restore();
 
   // Legend
   const legend = document.createElement('div');
-  legend.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;font-size:11px;';
+  legend.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;font-size:11px;';
   for (const band of GRADE_BANDS) {
     const item = document.createElement('span');
     item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${band.color};vertical-align:-1px;margin-right:3px"></span>${band.label}`;
     legend.appendChild(item);
   }
   if (splitSC) {
-    legend.innerHTML += `<span style="margin-left:8px">|</span>`;
-    legend.innerHTML += `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#666;vertical-align:-1px;margin-right:3px"></span>Regular</span>`;
-    legend.innerHTML += `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#bbb;vertical-align:-1px;margin-right:3px"></span>Special Con.</span>`;
+    legend.innerHTML += `<span style="margin-left:6px">|</span><span><b style="margin-right:3px">■</b>Regular (n=${regTotal})</span><span><b style="color:#bbb;margin-right:3px">■</b>Special Con. (n=${scTotal})</span>`;
   }
-  const bpLegend = document.createElement('div');
-  bpLegend.style.cssText = 'font-size:10px;color:#777;margin-top:4px;';
-  bpLegend.textContent = 'Box plots: box = Q1–Q3, red line = median, whiskers = min–max';
 
   container.appendChild(title);
   container.appendChild(statsEl);
   container.appendChild(canvas);
   container.appendChild(legend);
-  container.appendChild(bpLegend);
+  addCopyButton(container, canvas);
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
