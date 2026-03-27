@@ -1335,6 +1335,97 @@ function cadmusAction(action, options) {
     return { success: failed === 0, processed: fixed, skipped, logs };
   }
 
+  // --- Fix Fill-in-Blank Questions — reduce to one correct answer per blank ---
+  async function fixFIBQuestions(opts) {
+    const { tenant, assessmentId } = parseCadmusUrl();
+    const hdrs = { 'x-cadmus-role': 'AUTHOR', 'x-cadmus-tenant': tenant, 'x-cadmus-assessment': assessmentId };
+
+    const table = findTanStackTable();
+    if (!table) return { error: 'Could not find table instance. Is the library loaded?' };
+
+    let rows;
+    const selected = table.getSelectedRowModel().rows.filter(r => r.original.questionType === 'BLANKS');
+    if (selected.length > 0) {
+      rows = selected;
+    } else {
+      rows = table.getRowModel().rows.filter(r => r.original.questionType === 'BLANKS');
+    }
+    if (!rows.length) return { error: 'No fill-in-blank questions found in the library' };
+
+    const logs = [];
+    let fixed = 0, skipped = 0, failed = 0;
+
+    for (let ri = 0; ri < rows.length; ri++) {
+      const qId = rows[ri].original.id;
+      const label = rows[ri].original.shortPrompt?.substring(0, 50) || qId;
+
+      const fd = await gql(FETCH_Q, { questionId: qId }, hdrs);
+      if (fd.errors) { logs.push({ msg: `Fetch failed: ${label}`, cls: 'err' }); failed++; continue; }
+
+      const q = fd.data.question;
+      const fields = q.body?.fields || [];
+      if (!fields.length) { logs.push({ msg: `${label} — no fields, skipped`, cls: 'warn' }); skipped++; continue; }
+
+      // Check if any blank has more than 1 correct answer
+      let needsFix = false;
+      for (const f of fields) {
+        if ((f.response?.correctValues || []).length > 1) { needsFix = true; break; }
+      }
+      if (!needsFix) {
+        logs.push({ msg: `${label} — already 1 correct per blank, skipped`, cls: 'ok' });
+        skipped++;
+        continue;
+      }
+
+      // Rebuild fields: keep first correctValue, rest stay as choices (become wrong)
+      const newFields = fields.map(f => {
+        const cv = f.response?.correctValues || [];
+        const choices = f.interaction?.choices || [];
+        return {
+          identifier: f.identifier,
+          response: {
+            partialScoring: f.response.partialScoring,
+            matchSimilarity: null,
+            correctValues: cv.length > 0 ? [cv[0]] : cv,
+            correctRanges: [],
+            correctAreas: [],
+            caseSensitive: f.response.caseSensitive,
+            errorMargin: null,
+            baseType: null,
+          },
+          choiceInteraction: {
+            choices: choices.map(c => ({ identifier: c.identifier, content: c.content })),
+          },
+        };
+      });
+
+      const blanksFixed = fields.filter(f => (f.response?.correctValues || []).length > 1).length;
+
+      const input = {
+        id: q.id,
+        attributes: {
+          promptDoc: q.body.promptDoc, questionType: q.questionType, shortPrompt: q.shortPrompt,
+          feedback: q.body.feedback, promptImage: null, parentQuestionId: q.parentQuestionId,
+          points: q.points, shuffle: q.shuffle,
+          fields: newFields,
+        },
+      };
+
+      const res = await gql(UPDATE_Q, { input, childrenQuestions: [] }, hdrs);
+      if (res.errors) {
+        logs.push({ msg: `  → FAILED: ${res.errors[0].message}`, cls: 'err' });
+        failed++;
+      } else {
+        logs.push({ msg: `${label} — fixed ${blanksFixed} blank(s) (reduced to 1 correct each)`, cls: 'ok' });
+        fixed++;
+      }
+    }
+
+    if (fixed > 0) await refreshLibrary();
+    logs.push({ msg: `Fix complete: ${fixed} fixed, ${skipped} already correct, ${failed} failed`, cls: fixed > 0 ? 'ok' : 'err' });
+    return { success: failed === 0, processed: fixed, skipped, logs };
+  }
+
   // --- Export questions ---
   async function exportQuestions(opts) {
     const { tenant, assessmentId } = parseCadmusUrl();
@@ -1452,7 +1543,7 @@ function cadmusAction(action, options) {
   }
 
   // --- Dispatch ---
-  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions, scanDuplicates };
+  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions, fixFIBQuestions, scanDuplicates };
   return actions[action](options);
 }
 
@@ -2581,6 +2672,17 @@ document.addEventListener('click', (e) => {
         document.querySelectorAll('.btn').forEach(b => b.disabled = true);
         log('Fixing matching questions — repairing correct answer pairings and adding distractors…');
         const result = await runAction('fixMatchingQuestions', {});
+        if (result?.error) { logError(result.error); }
+        if (result?.logs) result.logs.forEach(l => log(l.msg, l.cls));
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      })();
+      return;
+    case 'fixFIB':
+      // Fix FIB questions — reduce to 1 correct answer per blank
+      (async () => {
+        document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        log('Fixing fill-in-blank questions — reducing to 1 correct answer per blank…');
+        const result = await runAction('fixFIBQuestions', {});
         if (result?.error) { logError(result.error); }
         if (result?.logs) result.logs.forEach(l => log(l.msg, l.cls));
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
