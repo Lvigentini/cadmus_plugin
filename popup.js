@@ -1420,16 +1420,19 @@ function cadmusAction(action, options) {
         continue;
       }
 
-      // Rebuild fields: keep first correctValue, rest stay as choices (become wrong)
+      // Rebuild fields: keep first correctValue, delete extra correct choices, retain distractors
       const newFields = fields.map(f => {
         const cv = f.response?.correctValues || [];
         const choices = f.interaction?.choices || [];
+        const keepId = cv[0];  // first correct identifier
+        const extraCorrectIds = new Set(cv.slice(1));  // IDs to remove from choices
+        const newChoices = choices.filter(c => !extraCorrectIds.has(c.identifier));
         return {
           identifier: f.identifier,
           response: {
             partialScoring: f.response.partialScoring,
             matchSimilarity: null,
-            correctValues: cv.length > 0 ? [cv[0]] : cv,
+            correctValues: keepId ? [keepId] : [],
             correctRanges: [],
             correctAreas: [],
             caseSensitive: f.response.caseSensitive,
@@ -1437,7 +1440,7 @@ function cadmusAction(action, options) {
             baseType: null,
           },
           choiceInteraction: {
-            choices: choices.map(c => ({ identifier: c.identifier, content: c.content })),
+            choices: newChoices.map(c => ({ identifier: c.identifier, content: c.content })),
           },
         };
       });
