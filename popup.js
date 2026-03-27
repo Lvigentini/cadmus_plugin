@@ -1586,7 +1586,68 @@ function cadmusAction(action, options) {
   }
 
   // --- Dispatch ---
-  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions, fixFIBQuestions, scanDuplicates };
+  // --- Check Matching Balance — report prompts vs answers for each question ---
+  async function checkMatchingBalance(opts) {
+    const { tenant, assessmentId } = parseCadmusUrl();
+    const hdrs = { 'x-cadmus-role': 'AUTHOR', 'x-cadmus-tenant': tenant, 'x-cadmus-assessment': assessmentId };
+
+    const table = findTanStackTable();
+    if (!table) return { error: 'Could not find table instance. Is the library loaded?' };
+
+    let rows;
+    const selected = table.getSelectedRowModel().rows.filter(r => r.original.questionType === 'MATCHING');
+    if (selected.length > 0) {
+      rows = selected;
+    } else {
+      rows = table.getRowModel().rows.filter(r => r.original.questionType === 'MATCHING');
+    }
+    if (!rows.length) return { error: 'No matching questions found in the library' };
+
+    const logs = [];
+    let ok = 0, issues = 0;
+
+    for (let ri = 0; ri < rows.length; ri++) {
+      const qId = rows[ri].original.id;
+      const libId = rows[ri].original.libraryId || '';
+      const label = rows[ri].original.shortPrompt?.substring(0, 60) || qId;
+
+      const fd = await gql(FETCH_Q, { questionId: qId }, hdrs);
+      if (fd.errors) { logs.push({ msg: `Fetch failed: ${label}`, cls: 'err' }); issues++; continue; }
+
+      const q = fd.data.question;
+      const field = q.body?.fields?.[0];
+      const inter = field?.interaction;
+      if (!inter?.sourceSet || !inter?.targetSet) {
+        logs.push({ msg: `#${libId} ${label} — no match data`, cls: 'warn' }); issues++; continue;
+      }
+
+      const sources = inter.sourceSet;
+      const targets = inter.targetSet;
+      const cv = field.response?.correctValues || [];
+
+      // Determine which side is prompts vs answers based on identifier naming
+      const correctModel = sources.length > 0 && sources[0].identifier.startsWith('right_');
+      const prompts = correctModel ? targets.length : sources.length;
+      const answers = correctModel ? sources.length : targets.length;
+
+      if (prompts > answers) {
+        logs.push({ msg: `#${libId} — ${prompts} prompts, ${answers} answers — NEEDS FIX  [${label}]`, cls: 'err' });
+        issues++;
+      } else if (prompts < answers) {
+        const distractors = answers - prompts;
+        logs.push({ msg: `#${libId} — ${prompts} prompts, ${answers} answers (${distractors} distractor${distractors > 1 ? 's' : ''}) — OK  [${label}]`, cls: 'ok' });
+        ok++;
+      } else {
+        logs.push({ msg: `#${libId} — ${prompts} prompts, ${answers} answers — balanced  [${label}]`, cls: 'ok' });
+        ok++;
+      }
+    }
+
+    logs.push({ msg: `Check complete: ${ok} OK, ${issues} issue(s) out of ${rows.length} question(s)`, cls: issues > 0 ? 'err' : 'ok' });
+    return { success: issues === 0, logs };
+  }
+
+  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions, fixFIBQuestions, checkMatchingBalance, scanDuplicates };
   return actions[action](options);
 }
 
@@ -2717,6 +2778,16 @@ document.addEventListener('click', (e) => {
         document.querySelectorAll('.btn').forEach(b => b.disabled = true);
         log('Fixing matching questions — repairing correct answer pairings and adding distractors…');
         const result = await runAction('fixMatchingQuestions', {});
+        if (result?.error) { logError(result.error); }
+        if (result?.logs) result.logs.forEach(l => log(l.msg, l.cls));
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      })();
+      return;
+    case 'checkMatchingBalance':
+      (async () => {
+        document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        log('Checking matching question balance (prompts vs answers)…');
+        const result = await runAction('checkMatchingBalance', {});
         if (result?.error) { logError(result.error); }
         if (result?.logs) result.logs.forEach(l => log(l.msg, l.cls));
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
