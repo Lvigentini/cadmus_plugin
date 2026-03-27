@@ -45,14 +45,15 @@ function isNewer(latest, current) {
 let cadmusTabId = null;
 
 async function findCadmusTab() {
-  // Try all tabs matching Cadmus host
+  // Try all tabs matching Cadmus host — prefer library, then marking
   const tabs = await chrome.tabs.query({ url: 'https://*.cadmus.io/*' });
+  let libraryTab = null, markingTab = null;
   for (const tab of tabs) {
     const url = tab.url || '';
-    const match = url.match(/cadmus\.io\/([^/]+)\/assessment\/([^/]+)\/library/);
-    if (match) return tab;
+    if (/\/library\b/.test(url)) libraryTab = tab;
+    else if (/\/marking\b/.test(url)) markingTab = tab;
   }
-  return null;
+  return libraryTab || markingTab || null;
 }
 
 // ── Check context on popup open ──────────────────────────────────────────────
