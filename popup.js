@@ -1308,6 +1308,17 @@ function cadmusAction(action, options) {
         && cv.length > 0
         && cv[0].startsWith('left_');
 
+      // Detect mismatch: more prompts (targets/left) than answers (sources/right)
+      // In correct model: targetSet = prompts, sourceSet = answers
+      // In broken model: sourceSet = prompts, targetSet = answers
+      const prompts = alreadyCorrect ? oldTargets.length : oldSources.length;
+      const answers = alreadyCorrect ? oldSources.length : oldTargets.length;
+      if (prompts > answers) {
+        logs.push({ msg: `⚠ ${label} — ${prompts} prompts but only ${answers} answers — needs manual fix  [ID: ${qId}]`, cls: 'err' });
+        failed++;
+        continue;
+      }
+
       if (alreadyCorrect) {
         logs.push({ msg: `${label} — already correct model, skipped`, cls: 'ok' });
         skipped++;
