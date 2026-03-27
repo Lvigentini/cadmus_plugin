@@ -31,6 +31,10 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       Export
     </button>
+    <button class="tab" data-tab="report">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="7" width="4" height="14"/><rect x="17" y="3" width="4" height="18"/></svg>
+      Report
+    </button>
     <button class="tab" data-tab="delete">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
       Delete
@@ -255,6 +259,23 @@
           </button>
         </div>
       </div>
+    </div>
+
+    <!-- ═══ REPORT TAB ═══ -->
+    <div class="tab-panel" data-panel="report">
+      <div class="tab-help">Quick visual reports from the Cadmus grading view. Open a Cadmus assessment with visible marks, then click a chart type below.</div>
+
+      <div class="card">
+        <div class="card-body" style="padding-top:14px">
+          <label>Max marks <input type="number" id="report-max" value="50" min="1" step="1" style="width:70px"></label>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button class="btn" data-action="chartDistribution">Mark Distribution</button>
+            <button class="btn" data-action="chartGrades">Grade Breakdown</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="report-output" style="margin-top:12px;padding:0 12px"></div>
     </div>
 
     <!-- ═══ DELETE TAB ═══ -->
