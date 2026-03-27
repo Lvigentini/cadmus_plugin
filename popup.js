@@ -1621,31 +1621,51 @@ function cadmusAction(action, options) {
         logs.push({ msg: `#${libId} ${label} — no match data`, cls: 'warn' }); issues++; continue;
       }
 
-      const sources = inter.sourceSet || [];
-      const targets = inter.targetSet || [];
-      const cv = field.response?.correctValues || [];
+      const fields = q.body?.fields || [];
+      let qIssues = [];
 
-      // Count non-blank entries in each set
-      const srcFilled = sources.filter(s => s.content && s.content.trim()).length;
-      const srcBlank = sources.length - srcFilled;
-      const tgtFilled = targets.filter(t => t.content && t.content.trim()).length;
-      const tgtBlank = targets.length - tgtFilled;
-      const pairs = cv.length;
+      for (let fi = 0; fi < fields.length; fi++) {
+        const f = fields[fi];
+        const fInter = f.interaction;
+        if (!fInter?.sourceSet && !fInter?.targetSet) continue;
 
-      const problems = [];
-      if (srcBlank > 0) problems.push(`${srcBlank} blank in sourceSet (${sources.length} total)`);
-      if (tgtBlank > 0) problems.push(`${tgtBlank} blank in targetSet (${targets.length} total)`);
-      if (srcFilled !== tgtFilled) problems.push(`${tgtFilled} filled targets vs ${srcFilled} filled sources`);
-      if (pairs < Math.min(srcFilled, tgtFilled)) problems.push(`only ${pairs} correctValues for ${Math.min(srcFilled, tgtFilled)} filled entries`);
+        const sources = fInter.sourceSet || [];
+        const targets = fInter.targetSet || [];
+        const cv = f.response?.correctValues || [];
 
-      const detail = `src: ${srcFilled}/${sources.length}, tgt: ${tgtFilled}/${targets.length}, pairs: ${pairs}`;
-      if (problems.length > 0) {
-        logs.push({ msg: `#${libId} — ${detail} — ${problems.join('; ')} — NEEDS FIX  [${label}]`, cls: 'err' });
+        // Dump every entry for diagnosis
+        logs.push({ msg: `#${libId} field[${fi}] — ${sources.length} sourceSet, ${targets.length} targetSet, ${cv.length} correctValues  [${label}]`, cls: 'warn' });
+        for (let si = 0; si < sources.length; si++) {
+          const s = sources[si];
+          const txt = (s.content || '').substring(0, 50) || '(empty)';
+          const paired = cv.some(c => c.includes(s.identifier));
+          logs.push({ msg: `  src[${si}] ${s.identifier}: "${txt}" ${paired ? '✓ paired' : '✗ NOT paired'}`, cls: paired ? 'ok' : 'err' });
+        }
+        for (let ti = 0; ti < targets.length; ti++) {
+          const t = targets[ti];
+          const txt = (t.content || '').substring(0, 50) || '(empty)';
+          const paired = cv.some(c => c.includes(t.identifier));
+          logs.push({ msg: `  tgt[${ti}] ${t.identifier}: "${txt}" ${paired ? '✓ paired' : '✗ NOT paired'}`, cls: paired ? 'ok' : 'err' });
+        }
+
+        // Check for problems
+        const srcBlank = sources.filter(s => !s.content || !s.content.trim()).length;
+        const tgtBlank = targets.filter(t => !t.content || !t.content.trim()).length;
+        const unpairedSrc = sources.filter(s => !cv.some(c => c.includes(s.identifier))).length;
+        const unpairedTgt = targets.filter(t => !cv.some(c => c.includes(t.identifier))).length;
+
+        if (srcBlank > 0) qIssues.push(`${srcBlank} blank source(s)`);
+        if (tgtBlank > 0) qIssues.push(`${tgtBlank} blank target(s)`);
+        if (unpairedSrc > 0 && unpairedSrc !== (sources.length - targets.length)) qIssues.push(`${unpairedSrc} unpaired source(s)`);
+        if (unpairedTgt > 0) qIssues.push(`${unpairedTgt} unpaired target(s)`);
+        if (sources.length < targets.length) qIssues.push(`fewer sources (${sources.length}) than targets (${targets.length})`);
+      }
+
+      if (qIssues.length > 0) {
+        logs.push({ msg: `#${libId} — NEEDS FIX: ${qIssues.join('; ')}`, cls: 'err' });
         issues++;
       } else {
-        const extra = sources.length > targets.length ? sources.length - targets.length : targets.length > sources.length ? targets.length - sources.length : 0;
-        const status = extra > 0 ? `${extra} distractor(s)` : 'balanced';
-        logs.push({ msg: `#${libId} — ${detail} — ${status}  [${label}]`, cls: 'ok' });
+        logs.push({ msg: `#${libId} — OK`, cls: 'ok' });
         ok++;
       }
     }
