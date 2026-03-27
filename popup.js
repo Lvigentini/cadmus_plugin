@@ -1627,18 +1627,31 @@ function cadmusAction(action, options) {
 
       // Determine which side is prompts vs answers based on identifier naming
       const correctModel = sources.length > 0 && sources[0].identifier.startsWith('right_');
-      const prompts = correctModel ? targets.length : sources.length;
-      const answers = correctModel ? sources.length : targets.length;
+      const promptSet = correctModel ? targets : sources;
+      const answerSet = correctModel ? sources : targets;
 
-      if (prompts > answers) {
-        logs.push({ msg: `#${libId} — ${prompts} prompts, ${answers} answers — NEEDS FIX  [${label}]`, cls: 'err' });
+      // Check for blank/empty content in either set
+      const blankPrompts = promptSet.filter(p => !p.content || !p.content.trim());
+      const blankAnswers = answerSet.filter(a => !a.content || !a.content.trim());
+      const pairedCount = cv.length;
+      const promptCount = promptSet.length;
+      const answerCount = answerSet.length;
+
+      const problems = [];
+      if (blankPrompts.length > 0) problems.push(`${blankPrompts.length} blank prompt(s)`);
+      if (blankAnswers.length > 0) problems.push(`${blankAnswers.length} blank answer(s)`);
+      if (promptCount > pairedCount) problems.push(`${promptCount - pairedCount} unpaired prompt(s)`);
+      if (promptCount > answerCount) problems.push(`more prompts than answers`);
+
+      if (problems.length > 0) {
+        logs.push({ msg: `#${libId} — ${promptCount} prompts, ${answerCount} answers, ${pairedCount} pairs — ${problems.join(', ')} — NEEDS FIX  [${label}]`, cls: 'err' });
         issues++;
-      } else if (prompts < answers) {
-        const distractors = answers - prompts;
-        logs.push({ msg: `#${libId} — ${prompts} prompts, ${answers} answers (${distractors} distractor${distractors > 1 ? 's' : ''}) — OK  [${label}]`, cls: 'ok' });
+      } else if (answerCount > promptCount) {
+        const distractors = answerCount - promptCount;
+        logs.push({ msg: `#${libId} — ${promptCount} prompts, ${answerCount} answers, ${pairedCount} pairs (${distractors} distractor${distractors > 1 ? 's' : ''}) — OK  [${label}]`, cls: 'ok' });
         ok++;
       } else {
-        logs.push({ msg: `#${libId} — ${prompts} prompts, ${answers} answers — balanced  [${label}]`, cls: 'ok' });
+        logs.push({ msg: `#${libId} — ${promptCount} prompts, ${answerCount} answers, ${pairedCount} pairs — balanced  [${label}]`, cls: 'ok' });
         ok++;
       }
     }
