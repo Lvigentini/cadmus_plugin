@@ -63,16 +63,16 @@ async function checkContext() {
   const url = tab.url || '';
   cadmusTabId = tab.id;
 
-  // Detect which Cadmus page we're on
-  const libMatch = url.match(/cadmus\.io\/([^/]+)\/assessment\/([^/]+)\/library/);
-  const markMatch = url.match(/cadmus\.io\/([^/]+)\/assessment\/([^/]+)\/class\/marking/);
+  // Detect which Cadmus page we're on — extract tenant from path segment after host
+  const tenantMatch = url.match(/cadmus\.io\/([^/]+)/);
+  const tenant = tenantMatch ? tenantMatch[1] : 'unknown';
+  const isLibrary = /\/library\b/.test(url);
+  const isMarking = /\/marking\b/.test(url);
 
-  if (libMatch) {
-    const [, tenant, assessmentId] = libMatch;
-    setConnected(tenant, assessmentId, 'library');
-  } else if (markMatch) {
-    const [, tenant, assessmentId] = markMatch;
-    setConnected(tenant, assessmentId, 'marking');
+  if (isLibrary) {
+    setConnected(tenant, '', 'library');
+  } else if (isMarking) {
+    setConnected(tenant, '', 'marking');
   } else {
     return setDisconnected('Navigate to a Cadmus Question Library or Marking page');
   }
@@ -82,7 +82,7 @@ function setConnected(tenant, assessmentId, context) {
   const status = $('#status');
   status.className = 'status status--connected';
   const label = context === 'marking' ? 'Marking' : 'Library';
-  $('#status-text').textContent = `Connected — ${label} — ${tenant} / ${assessmentId.substring(0, 8)}…`;
+  $('#status-text').textContent = `Connected — ${label} — ${tenant}`;
   $('#actions').classList.remove('disabled');
   document.body.dataset.tenant = tenant;
   document.body.dataset.assessmentId = assessmentId;
