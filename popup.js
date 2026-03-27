@@ -1621,37 +1621,31 @@ function cadmusAction(action, options) {
         logs.push({ msg: `#${libId} ${label} — no match data`, cls: 'warn' }); issues++; continue;
       }
 
-      const sources = inter.sourceSet;
-      const targets = inter.targetSet;
+      const sources = inter.sourceSet || [];
+      const targets = inter.targetSet || [];
       const cv = field.response?.correctValues || [];
 
-      // Determine which side is prompts vs answers based on identifier naming
-      const correctModel = sources.length > 0 && sources[0].identifier.startsWith('right_');
-      const promptSet = correctModel ? targets : sources;
-      const answerSet = correctModel ? sources : targets;
-
-      // Check for blank/empty content in either set
-      const blankPrompts = promptSet.filter(p => !p.content || !p.content.trim());
-      const blankAnswers = answerSet.filter(a => !a.content || !a.content.trim());
-      const pairedCount = cv.length;
-      const promptCount = promptSet.length;
-      const answerCount = answerSet.length;
+      // Count non-blank entries in each set
+      const srcFilled = sources.filter(s => s.content && s.content.trim()).length;
+      const srcBlank = sources.length - srcFilled;
+      const tgtFilled = targets.filter(t => t.content && t.content.trim()).length;
+      const tgtBlank = targets.length - tgtFilled;
+      const pairs = cv.length;
 
       const problems = [];
-      if (blankPrompts.length > 0) problems.push(`${blankPrompts.length} blank prompt(s)`);
-      if (blankAnswers.length > 0) problems.push(`${blankAnswers.length} blank answer(s)`);
-      if (promptCount > pairedCount) problems.push(`${promptCount - pairedCount} unpaired prompt(s)`);
-      if (promptCount > answerCount) problems.push(`more prompts than answers`);
+      if (srcBlank > 0) problems.push(`${srcBlank} blank in sourceSet (${sources.length} total)`);
+      if (tgtBlank > 0) problems.push(`${tgtBlank} blank in targetSet (${targets.length} total)`);
+      if (srcFilled !== tgtFilled) problems.push(`${tgtFilled} filled targets vs ${srcFilled} filled sources`);
+      if (pairs < Math.min(srcFilled, tgtFilled)) problems.push(`only ${pairs} correctValues for ${Math.min(srcFilled, tgtFilled)} filled entries`);
 
+      const detail = `src: ${srcFilled}/${sources.length}, tgt: ${tgtFilled}/${targets.length}, pairs: ${pairs}`;
       if (problems.length > 0) {
-        logs.push({ msg: `#${libId} — ${promptCount} prompts, ${answerCount} answers, ${pairedCount} pairs — ${problems.join(', ')} — NEEDS FIX  [${label}]`, cls: 'err' });
+        logs.push({ msg: `#${libId} — ${detail} — ${problems.join('; ')} — NEEDS FIX  [${label}]`, cls: 'err' });
         issues++;
-      } else if (answerCount > promptCount) {
-        const distractors = answerCount - promptCount;
-        logs.push({ msg: `#${libId} — ${promptCount} prompts, ${answerCount} answers, ${pairedCount} pairs (${distractors} distractor${distractors > 1 ? 's' : ''}) — OK  [${label}]`, cls: 'ok' });
-        ok++;
       } else {
-        logs.push({ msg: `#${libId} — ${promptCount} prompts, ${answerCount} answers, ${pairedCount} pairs — balanced  [${label}]`, cls: 'ok' });
+        const extra = sources.length > targets.length ? sources.length - targets.length : targets.length > sources.length ? targets.length - sources.length : 0;
+        const status = extra > 0 ? `${extra} distractor(s)` : 'balanced';
+        logs.push({ msg: `#${libId} — ${detail} — ${status}  [${label}]`, cls: 'ok' });
         ok++;
       }
     }
