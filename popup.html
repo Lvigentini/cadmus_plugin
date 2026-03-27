@@ -194,8 +194,10 @@
           <button class="btn" data-action="editMatching">Run</button>
           <div class="fix-matching-section">
             <p class="fix-hint">Repair matching questions with broken scoring and remove stale distractors (selected or all)</p>
-            <button class="btn btn--fix-matching" data-action="fixMatching">Fix Matching Questions</button>
-            <button class="btn btn--fix-matching" data-action="checkMatchingBalance">Check Prompts / Answers</button>
+            <div style="display:flex;gap:0;justify-content:space-between">
+              <button class="btn btn--fix-matching" data-action="fixMatching" style="flex:0 0 48%">Fix Matching</button>
+              <button class="btn btn--fix-matching" data-action="checkMatchingBalance" style="flex:0 0 48%">Check Prompts / Answers</button>
+            </div>
           </div>
         </div>
       </details>
