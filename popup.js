@@ -2967,10 +2967,10 @@ async function scrapeGrades() {
 
 // Grade band definitions (Australian scale)
 const GRADE_BANDS = [
-  { label: 'HD',  name: 'High Distinction', min: 85, color: '#1b5e20' },
+  { label: 'HD',  name: 'High Distinction', min: 85, color: '#1565c0' },
   { label: 'D',   name: 'Distinction',      min: 75, color: '#2e7d32' },
-  { label: 'CR',  name: 'Credit',           min: 65, color: '#558b2f' },
-  { label: 'P',   name: 'Pass',             min: 50, color: '#f9a825' },
+  { label: 'CR',  name: 'Credit',           min: 65, color: '#f9a825' },
+  { label: 'P',   name: 'Pass',             min: 50, color: '#ef6c00' },
   { label: 'F',   name: 'Fail',             min: 0,  color: '#c62828' },
 ];
 
@@ -3052,7 +3052,7 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
 
   const title = document.createElement('div');
   title.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:2px;color:#1a1a2e;';
-  title.textContent = `Mark Distribution — ${total} submissions (out of ${maxMarks})`;
+  title.textContent = `Mark Distribution — ${total} submissions (out of ${maxMarks} marks)`;
 
   const statsEl = document.createElement('div');
   statsEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:12px;';
@@ -3123,7 +3123,7 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
   ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + chartH + 1); ctx.lineTo(padL + chartW, padT + chartH + 1); ctx.stroke();
   ctx.fillStyle = '#555'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText(`Mark (out of ${maxMarks})`, padL + chartW / 2, canvas.height - 2);
+  ctx.fillText(`Mark (out of ${maxMarks} marks)`, padL + chartW / 2, canvas.height - 2);
   ctx.save(); ctx.translate(10, padT + chartH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('# Students', 0, 0); ctx.restore();
 
   // Legend
