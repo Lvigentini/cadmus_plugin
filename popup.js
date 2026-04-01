@@ -45,10 +45,20 @@ function isNewer(latest, current) {
 let cadmusTabId = null;
 
 async function findCadmusTab() {
-  // Use the active tab in the current window
+  // 1. Try the source tab stored by background.js when the icon was clicked
+  try {
+    const { cadmusSourceTabId } = await chrome.storage.session.get('cadmusSourceTabId');
+    if (cadmusSourceTabId) {
+      const tab = await chrome.tabs.get(cadmusSourceTabId);
+      if (tab?.url && /cadmus\.io/.test(tab.url)) return tab;
+    }
+  } catch (_) {}
+
+  // 2. Fallback: active tab in current window (works when opened as popup, not window)
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (activeTab?.url && /cadmus\.io/.test(activeTab.url)) return activeTab;
-  // Fallback: popup opened as separate window (background.js) — find any Cadmus tab
+
+  // 3. Last resort: any open Cadmus tab
   const tabs = await chrome.tabs.query({ url: 'https://*.cadmus.io/*' });
   return tabs[0] || null;
 }
