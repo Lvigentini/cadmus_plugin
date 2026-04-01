@@ -45,13 +45,16 @@ function isNewer(latest, current) {
 let cadmusTabId = null;
 
 async function findCadmusTab() {
-  // Use the active tab in the current window — the user opens the plugin on the tab they want
+  // Use the active tab in the current window
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (activeTab?.url && /cadmus\.io/.test(activeTab.url)) return activeTab;
-  // Fallback: check if launched as a separate window (background.js), find the opener tab
+  // Fallback: popup opened as separate window (background.js) — find any Cadmus tab
   const tabs = await chrome.tabs.query({ url: 'https://*.cadmus.io/*' });
   return tabs[0] || null;
 }
+
+// Base pattern: https://*.cadmus.io/{tenant}/assessment/{assessmentId}/...
+const CADMUS_BASE = /^https:\/\/[^/]*cadmus\.io\/([^/]+)\/assessment\/([^/]+)/;
 
 // ── Check context on popup open ──────────────────────────────────────────────
 async function checkContext() {
@@ -61,23 +64,24 @@ async function checkContext() {
   const url = tab.url || '';
   cadmusTabId = tab.id;
 
-  // Detect which Cadmus page we're on — extract tenant from path segment after host
-  const tenantMatch = url.match(/cadmus\.io\/([^/]+)/);
-  const tenant = tenantMatch ? tenantMatch[1] : 'unknown';
-  // Strict path matching — must be the specific page type at end of path
-  const isLibrary = /\/assessment\/[^/]+\/library\b/.test(url);
-  const isMarking = /\/class\/marking\b/.test(url);
-  const isAssessment = /\/task\/[^/]+\/edit\//.test(url);
+  const baseMatch = url.match(CADMUS_BASE);
+  if (!baseMatch) return setDisconnected('Navigate to a Cadmus assessment page');
 
-  if (isLibrary) {
-    setConnected(tenant, '', 'library');
-  } else if (isMarking) {
-    setConnected(tenant, '', 'marking');
-  } else if (isAssessment) {
-    setConnected(tenant, '', 'assessment');
+  const tenant = baseMatch[1];
+  const path = url.substring(baseMatch[0].length);  // everything after /assessment/{id}
+
+  let context;
+  if (/^\/library\b/.test(path)) {
+    context = 'library';
+  } else if (/^\/class\/marking\b/.test(path)) {
+    context = 'marking';
+  } else if (/^\/task\/[^/]+\/edit\b/.test(path)) {
+    context = 'assessment';
   } else {
-    return setDisconnected('Navigate to a Cadmus Library, Marking, or Assessment page');
+    return setDisconnected('Navigate to a Library, Marking, or Assessment Edit page');
   }
+
+  setConnected(tenant, baseMatch[2], context);
 }
 
 function setConnected(tenant, assessmentId, context) {
