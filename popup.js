@@ -2649,20 +2649,18 @@ ${items}
 </questestinterop>`;
 }
 
-async function exportToDocx(data, randomise) {
+async function exportToDocx(data, { randomise = false, examReady = false } = {}) {
   const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell,
     WidthType, BorderStyle, AlignmentType } = docx;
 
   const questions = [...data.questions];
 
   if (randomise) {
-    // Fisher-Yates shuffle
     for (let i = questions.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [questions[i], questions[j]] = [questions[j], questions[i]];
     }
   } else {
-    // Sort by type: MCQ, Matching, FIB, Short
     const typeOrder = { MCQ: 0, MATCHING: 1, BLANKS: 2, SHORT: 3 };
     questions.sort((a, b) => (typeOrder[a.questionType] ?? 9) - (typeOrder[b.questionType] ?? 9));
   }
@@ -2670,11 +2668,13 @@ async function exportToDocx(data, randomise) {
   const typeLabels = { MCQ: 'Multiple Choice', MATCHING: 'Matching', BLANKS: 'Fill-in-the-Blank', SHORT: 'Short Answer' };
   const children = [];
   let currentType = null;
+  let qNum = 0;
 
   for (let qi = 0; qi < questions.length; qi++) {
     const q = questions[qi];
+    qNum++;
 
-    // Type heading (only in sorted mode)
+    // Section heading when type changes (sorted modes only)
     if (!randomise && q.questionType !== currentType) {
       currentType = q.questionType;
       if (qi > 0) {
@@ -2685,92 +2685,132 @@ async function exportToDocx(data, randomise) {
         children: [new TextRun({ text: typeLabels[q.questionType] || q.questionType, bold: true, size: 32 })],
         spacing: { after: 200 },
       }));
+      qNum = 1;  // restart numbering per section
     }
 
-    // Question block — keepLines + keepNext to prevent page splits
     const qChildren = [];
 
-    // Question number + type badge + difficulty + points
-    const metaParts = [`Q${qi + 1}`];
-    if (randomise) metaParts.push(typeLabels[q.questionType] || q.questionType);
-    if (q.difficulty) metaParts.push(q.difficulty);
-    if (q.points) metaParts.push(`${q.points} pt${q.points !== 1 ? 's' : ''}`);
-    if (q.tags?.length) metaParts.push(q.tags.join(', '));
+    if (examReady) {
+      // Exam mode: just question number and prompt
+      qChildren.push(new Paragraph({
+        keepNext: true,
+        children: [new TextRun({ text: `${qNum}.  `, bold: true, size: 22 }), new TextRun({ text: q.prompt || '', size: 22 })],
+        spacing: { before: 300, after: 120 },
+      }));
+    } else {
+      // Full mode: metadata line + prompt
+      const metaParts = [`Q${qi + 1}`];
+      if (randomise) metaParts.push(typeLabels[q.questionType] || q.questionType);
+      if (q.difficulty) metaParts.push(q.difficulty);
+      if (q.points) metaParts.push(`${q.points} pt${q.points !== 1 ? 's' : ''}`);
+      if (q.tags?.length) metaParts.push(q.tags.join(', '));
 
-    qChildren.push(new Paragraph({
-      keepNext: true,
-      children: [new TextRun({ text: metaParts.join('  |  '), bold: true, size: 20, color: '666666' })],
-      spacing: { before: 300 },
-    }));
+      qChildren.push(new Paragraph({
+        keepNext: true,
+        children: [new TextRun({ text: metaParts.join('  |  '), bold: true, size: 20, color: '666666' })],
+        spacing: { before: 300 },
+      }));
 
-    // Prompt text
-    qChildren.push(new Paragraph({
-      keepNext: true,
-      children: [new TextRun({ text: q.prompt || '', size: 22 })],
-      spacing: { after: 120 },
-    }));
+      qChildren.push(new Paragraph({
+        keepNext: true,
+        children: [new TextRun({ text: q.prompt || '', size: 22 })],
+        spacing: { after: 120 },
+      }));
+    }
 
-    // Answer details per type
+    // MCQ choices
     if (q.questionType === 'MCQ' && q.choices?.length) {
       for (const c of q.choices) {
         const label = String.fromCharCode(65 + q.choices.indexOf(c));
-        qChildren.push(new Paragraph({
-          keepNext: true,
-          indent: { left: 360 },
-          children: [
-            new TextRun({ text: `${label}. `, bold: true, size: 20 }),
-            new TextRun({ text: c.text, size: 20 }),
-            ...(c.correct ? [new TextRun({ text: '  ✓', bold: true, color: '2e7d32', size: 20 })] : []),
-          ],
-        }));
-      }
-    } else if (q.questionType === 'MATCHING' && q.pairs?.length) {
-      const rows = q.pairs.map(p => new TableRow({
-        children: [
-          new TableCell({
-            width: { size: 45, type: WidthType.PERCENTAGE },
-            children: [new Paragraph({ children: [new TextRun({ text: p.left, size: 20 })] })],
-          }),
-          new TableCell({
-            width: { size: 10, type: WidthType.PERCENTAGE },
-            children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: '→', size: 20 })] })],
-          }),
-          new TableCell({
-            width: { size: 45, type: WidthType.PERCENTAGE },
-            children: [new Paragraph({ children: [new TextRun({ text: p.right, size: 20 })] })],
-          }),
-        ],
-      }));
-      qChildren.push(new Table({
-        rows,
-        width: { size: 100, type: WidthType.PERCENTAGE },
-      }));
-    } else if (q.questionType === 'BLANKS') {
-      const answers = (q.correctValues || []).join('; ');
-      if (answers) {
-        qChildren.push(new Paragraph({
-          indent: { left: 360 },
-          children: [
-            new TextRun({ text: 'Answers: ', bold: true, size: 20 }),
-            new TextRun({ text: answers, size: 20 }),
-          ],
-        }));
-      }
-    } else if (q.questionType === 'SHORT') {
-      const answers = (q.correctValues || []).join('; ');
-      if (answers) {
-        qChildren.push(new Paragraph({
-          indent: { left: 360 },
-          children: [
-            new TextRun({ text: 'Key terms: ', bold: true, size: 20 }),
-            new TextRun({ text: answers, size: 20 }),
-          ],
-        }));
+        const runs = [
+          new TextRun({ text: `${label}. `, bold: true, size: 20 }),
+          new TextRun({ text: c.text, size: 20 }),
+        ];
+        // Only show correct marker in non-exam mode
+        if (!examReady && c.correct) {
+          runs.push(new TextRun({ text: '  ✓', bold: true, color: '2e7d32', size: 20 }));
+        }
+        qChildren.push(new Paragraph({ keepNext: true, indent: { left: 360 }, children: runs }));
       }
     }
 
-    // Feedback/explanation
-    if (q.feedback) {
+    // Matching pairs
+    else if (q.questionType === 'MATCHING' && q.pairs?.length) {
+      if (examReady) {
+        // Exam mode: show prompts on left, shuffled answer pool on right (not paired)
+        const prompts = q.pairs.map(p => p.left);
+        const answers = [...q.pairs.map(p => p.right)].sort(() => Math.random() - 0.5);
+        const rowCount = Math.max(prompts.length, answers.length);
+        const tRows = [];
+        for (let ri = 0; ri < rowCount; ri++) {
+          tRows.push(new TableRow({
+            children: [
+              new TableCell({
+                width: { size: 50, type: WidthType.PERCENTAGE },
+                children: [new Paragraph({ children: [new TextRun({ text: prompts[ri] || '', size: 20 })] })],
+              }),
+              new TableCell({
+                width: { size: 50, type: WidthType.PERCENTAGE },
+                children: [new Paragraph({ children: [new TextRun({ text: answers[ri] || '', size: 20 })] })],
+              }),
+            ],
+          }));
+        }
+        qChildren.push(new Table({ rows: tRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      } else {
+        // Full mode: paired with arrows
+        const tRows = q.pairs.map(p => new TableRow({
+          children: [
+            new TableCell({
+              width: { size: 45, type: WidthType.PERCENTAGE },
+              children: [new Paragraph({ children: [new TextRun({ text: p.left, size: 20 })] })],
+            }),
+            new TableCell({
+              width: { size: 10, type: WidthType.PERCENTAGE },
+              children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: '\u2192', size: 20 })] })],
+            }),
+            new TableCell({
+              width: { size: 45, type: WidthType.PERCENTAGE },
+              children: [new Paragraph({ children: [new TextRun({ text: p.right, size: 20 })] })],
+            }),
+          ],
+        }));
+        qChildren.push(new Table({ rows: tRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      }
+    }
+
+    // FIB
+    else if (q.questionType === 'BLANKS') {
+      if (!examReady) {
+        const answers = (q.correctValues || []).join('; ');
+        if (answers) {
+          qChildren.push(new Paragraph({
+            indent: { left: 360 },
+            children: [new TextRun({ text: 'Answers: ', bold: true, size: 20 }), new TextRun({ text: answers, size: 20 })],
+          }));
+        }
+      }
+      // Exam mode: blanks are already in the prompt text as ___
+    }
+
+    // Short answer
+    else if (q.questionType === 'SHORT') {
+      if (examReady) {
+        // Show blank lines for student to write
+        qChildren.push(new Paragraph({ indent: { left: 360 }, spacing: { before: 200 }, children: [new TextRun({ text: '________________________________________', color: 'CCCCCC', size: 20 })] }));
+      } else {
+        const answers = (q.correctValues || []).join('; ');
+        if (answers) {
+          qChildren.push(new Paragraph({
+            indent: { left: 360 },
+            children: [new TextRun({ text: 'Key terms: ', bold: true, size: 20 }), new TextRun({ text: answers, size: 20 })],
+          }));
+        }
+      }
+    }
+
+    // Feedback — only in full mode
+    if (!examReady && q.feedback) {
       qChildren.push(new Paragraph({
         indent: { left: 360 },
         spacing: { before: 80 },
@@ -2781,7 +2821,7 @@ async function exportToDocx(data, randomise) {
       }));
     }
 
-    // Separator line
+    // Separator
     qChildren.push(new Paragraph({
       spacing: { before: 200 },
       border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: 'DDDDDD' } },
@@ -2794,9 +2834,7 @@ async function exportToDocx(data, randomise) {
   const doc = new Document({
     sections: [{
       properties: {
-        page: {
-          margin: { top: 720, bottom: 720, left: 720, right: 720 },
-        },
+        page: { margin: { top: 720, bottom: 720, left: 720, right: 720 } },
       },
       children,
     }],
@@ -3071,17 +3109,22 @@ document.addEventListener('click', (e) => {
               break;
             }
             case 'docx-sorted': {
-              const blob = await exportToDocx(data, false);
+              const blob = await exportToDocx(data, { randomise: false });
               downloadFile(blob, `${baseName}_by-type.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
               break;
             }
             case 'docx-random': {
-              const blob = await exportToDocx(data, true);
+              const blob = await exportToDocx(data, { randomise: true });
               downloadFile(blob, `${baseName}_randomised.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
               break;
             }
+            case 'docx-exam': {
+              const blob = await exportToDocx(data, { randomise: true, examReady: true });
+              downloadFile(blob, `${baseName}_exam.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+              break;
+            }
           }
-          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)' };
+          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)' };
           log(`Exported ${data.questions.length} question(s) as ${baseName}.${extMap[fmt] || fmt}`, 'ok');
         } catch (err) {
           log(`Export failed: ${err.message}`, 'err');
