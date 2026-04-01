@@ -2649,10 +2649,168 @@ ${items}
 </questestinterop>`;
 }
 
+async function exportToDocx(data, randomise) {
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell,
+    WidthType, BorderStyle, AlignmentType } = docx;
+
+  const questions = [...data.questions];
+
+  if (randomise) {
+    // Fisher-Yates shuffle
+    for (let i = questions.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [questions[i], questions[j]] = [questions[j], questions[i]];
+    }
+  } else {
+    // Sort by type: MCQ, Matching, FIB, Short
+    const typeOrder = { MCQ: 0, MATCHING: 1, BLANKS: 2, SHORT: 3 };
+    questions.sort((a, b) => (typeOrder[a.questionType] ?? 9) - (typeOrder[b.questionType] ?? 9));
+  }
+
+  const typeLabels = { MCQ: 'Multiple Choice', MATCHING: 'Matching', BLANKS: 'Fill-in-the-Blank', SHORT: 'Short Answer' };
+  const children = [];
+  let currentType = null;
+
+  for (let qi = 0; qi < questions.length; qi++) {
+    const q = questions[qi];
+
+    // Type heading (only in sorted mode)
+    if (!randomise && q.questionType !== currentType) {
+      currentType = q.questionType;
+      if (qi > 0) {
+        children.push(new Paragraph({ pageBreakBefore: true }));
+      }
+      children.push(new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        children: [new TextRun({ text: typeLabels[q.questionType] || q.questionType, bold: true, size: 32 })],
+        spacing: { after: 200 },
+      }));
+    }
+
+    // Question block — keepLines + keepNext to prevent page splits
+    const qChildren = [];
+
+    // Question number + type badge + difficulty + points
+    const metaParts = [`Q${qi + 1}`];
+    if (randomise) metaParts.push(typeLabels[q.questionType] || q.questionType);
+    if (q.difficulty) metaParts.push(q.difficulty);
+    if (q.points) metaParts.push(`${q.points} pt${q.points !== 1 ? 's' : ''}`);
+    if (q.tags?.length) metaParts.push(q.tags.join(', '));
+
+    qChildren.push(new Paragraph({
+      keepNext: true,
+      children: [new TextRun({ text: metaParts.join('  |  '), bold: true, size: 20, color: '666666' })],
+      spacing: { before: 300 },
+    }));
+
+    // Prompt text
+    qChildren.push(new Paragraph({
+      keepNext: true,
+      children: [new TextRun({ text: q.prompt || '', size: 22 })],
+      spacing: { after: 120 },
+    }));
+
+    // Answer details per type
+    if (q.questionType === 'MCQ' && q.choices?.length) {
+      for (const c of q.choices) {
+        const label = String.fromCharCode(65 + q.choices.indexOf(c));
+        qChildren.push(new Paragraph({
+          keepNext: true,
+          indent: { left: 360 },
+          children: [
+            new TextRun({ text: `${label}. `, bold: true, size: 20 }),
+            new TextRun({ text: c.text, size: 20 }),
+            ...(c.correct ? [new TextRun({ text: '  ✓', bold: true, color: '2e7d32', size: 20 })] : []),
+          ],
+        }));
+      }
+    } else if (q.questionType === 'MATCHING' && q.pairs?.length) {
+      const rows = q.pairs.map(p => new TableRow({
+        children: [
+          new TableCell({
+            width: { size: 45, type: WidthType.PERCENTAGE },
+            children: [new Paragraph({ children: [new TextRun({ text: p.left, size: 20 })] })],
+          }),
+          new TableCell({
+            width: { size: 10, type: WidthType.PERCENTAGE },
+            children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: '→', size: 20 })] })],
+          }),
+          new TableCell({
+            width: { size: 45, type: WidthType.PERCENTAGE },
+            children: [new Paragraph({ children: [new TextRun({ text: p.right, size: 20 })] })],
+          }),
+        ],
+      }));
+      qChildren.push(new Table({
+        rows,
+        width: { size: 100, type: WidthType.PERCENTAGE },
+      }));
+    } else if (q.questionType === 'BLANKS') {
+      const answers = (q.correctValues || []).join('; ');
+      if (answers) {
+        qChildren.push(new Paragraph({
+          indent: { left: 360 },
+          children: [
+            new TextRun({ text: 'Answers: ', bold: true, size: 20 }),
+            new TextRun({ text: answers, size: 20 }),
+          ],
+        }));
+      }
+    } else if (q.questionType === 'SHORT') {
+      const answers = (q.correctValues || []).join('; ');
+      if (answers) {
+        qChildren.push(new Paragraph({
+          indent: { left: 360 },
+          children: [
+            new TextRun({ text: 'Key terms: ', bold: true, size: 20 }),
+            new TextRun({ text: answers, size: 20 }),
+          ],
+        }));
+      }
+    }
+
+    // Feedback/explanation
+    if (q.feedback) {
+      qChildren.push(new Paragraph({
+        indent: { left: 360 },
+        spacing: { before: 80 },
+        children: [
+          new TextRun({ text: 'Explanation: ', bold: true, italics: true, size: 18, color: '555555' }),
+          new TextRun({ text: q.feedback, italics: true, size: 18, color: '555555' }),
+        ],
+      }));
+    }
+
+    // Separator line
+    qChildren.push(new Paragraph({
+      spacing: { before: 200 },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: 'DDDDDD' } },
+      children: [],
+    }));
+
+    children.push(...qChildren);
+  }
+
+  const doc = new Document({
+    sections: [{
+      properties: {
+        page: {
+          margin: { top: 720, bottom: 720, left: 720, right: 720 },
+        },
+      },
+      children,
+    }],
+  });
+
+  return await Packer.toBlob(doc);
+}
+
 function downloadFile(content, filename, mimeType) {
-  const blob = content instanceof ArrayBuffer || content instanceof Uint8Array
-    ? new Blob([content], { type: mimeType })
-    : new Blob([content], { type: mimeType });
+  const blob = content instanceof Blob
+    ? content
+    : content instanceof ArrayBuffer || content instanceof Uint8Array
+      ? new Blob([content], { type: mimeType })
+      : new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -2912,8 +3070,19 @@ document.addEventListener('click', (e) => {
               downloadFile(xml, `${baseName}.xml`, 'application/xml');
               break;
             }
+            case 'docx-sorted': {
+              const blob = await exportToDocx(data, false);
+              downloadFile(blob, `${baseName}_by-type.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+              break;
+            }
+            case 'docx-random': {
+              const blob = await exportToDocx(data, true);
+              downloadFile(blob, `${baseName}_randomised.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+              break;
+            }
           }
-          log(`Exported ${data.questions.length} question(s) as ${baseName}.${fmt === 'qti' ? 'xml' : fmt}`, 'ok');
+          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)' };
+          log(`Exported ${data.questions.length} question(s) as ${baseName}.${extMap[fmt] || fmt}`, 'ok');
         } catch (err) {
           log(`Export failed: ${err.message}`, 'err');
         }
