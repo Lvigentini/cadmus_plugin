@@ -1,6 +1,6 @@
 # Cadmus Question Library Tools
 
-A Chrome extension that enhances the [Cadmus](https://cadmus.io) question library interface with streamlined bulk import and export of questions, flexible column mapping, automatic tagging (topic, Bloom level, difficulty, filename), and batch editing of points, shuffle, and similarity settings across selected questions.
+A Chrome extension that enhances the [Cadmus](https://cadmus.io) assessment platform with tools for managing question libraries, exporting assessments, and reporting on student marks. It works across three Cadmus pages: the **Question Library** (import, export, edit, delete), the **Assessment Edit** page (export questions as an exam-ready Word document), and the **Marking** page (grade distribution and breakdown charts).
 
 ---
 
@@ -16,6 +16,8 @@ A Chrome extension that enhances the [Cadmus](https://cadmus.io) question librar
   - [Duplicate Detection](#duplicate-detection)
   - [Per-Type Import](#per-type-import)
   - [Export Questions](#export-questions)
+  - [Assessment Export](#assessment-export)
+  - [Quick Report](#quick-report)
   - [Bulk Edit](#bulk-edit)
   - [Fix Matching Questions](#fix-matching-questions)
   - [Delete](#delete)
@@ -130,7 +132,7 @@ Each question type card has its own import button (e.g. "Import MCQ Only") for s
 
 ### Export Questions
 
-Export questions from the library to four formats — choose between **selected questions** or the **entire library**:
+Export questions from the library to seven formats — choose between **selected questions** or the **entire library**:
 
 | Format | Extension | Use case |
 |--------|-----------|----------|
@@ -138,8 +140,11 @@ Export questions from the library to four formats — choose between **selected 
 | **CSV** | `.csv` | Open in any tool, import into other LMS platforms, data analysis |
 | **JSON** | `.json` | Programmatic access, backup, integration with other systems |
 | **QTI 1.2 XML** | `.xml` | Round-trip: export from one Cadmus library, re-import into another via this extension |
+| **Word — sorted by type** | `.docx` | Questions grouped under section headings (MCQ, Matching, FIB, Short Answer) with page breaks between sections. Full metadata, correct answers marked, explanations included |
+| **Word — randomised** | `.docx` | Fisher-Yates shuffle with type badges inline. Full metadata and correct answers included |
+| **Word — exam ready** | `.docx` | Randomised, clean format for student-facing use: no metadata, no correct answer markers, no explanations. Matching answers shuffled (not paired), FIB shows blanks only, short answer shows blank lines |
 
-Each export fetches full question data via GraphQL, including prompt text, answer details, feedback, difficulty, points, tags, and shuffle settings. Progress is shown in the log panel during export.
+Each export fetches full question data via GraphQL, including prompt text, answer details, feedback, difficulty, points, tags, and shuffle settings. Word exports use the [docx](https://github.com/dolanmiu/docx) library (bundled locally) and prevent questions from splitting across pages. Progress is shown in the log panel during export.
 
 #### Export columns (Excel and CSV)
 
@@ -215,6 +220,35 @@ The JSON export wraps questions in a metadata envelope:
 #### QTI 1.2 XML round-trip
 
 The QTI export produces Blackboard-flavoured QTI 1.2 XML that can be re-imported via the **Import** tab. MCQ questions export as `render_choice` items with scored response conditions; all other types export as `render_fib` (short response) items. Matching pairs are embedded in the prompt text using arrow notation.
+
+### Assessment Export
+
+The Export tab also works on **assessment edit pages** (`/task/.../edit/...`). When the plugin detects an assessment edit page, it reads questions directly from the Apollo cache — no API fetches required — and offers a single export option: **Word — exam ready**.
+
+This produces a clean, student-facing Word document with:
+- All questions from the assessment, randomised
+- No metadata, correct answer markers, or explanations
+- MCQ choices listed without checkmarks
+- Matching prompts and answers shown as two columns (answers shuffled)
+- FIB blanks shown as `___` with no answers
+- Short answer questions followed by blank lines
+
+The plugin auto-detects which Cadmus page you are on and shows only the relevant tabs:
+
+| Page | URL pattern | Tabs shown |
+|------|-------------|------------|
+| **Question Library** | `/assessment/{id}/library` | Import, Bulk Edit, Export, Delete |
+| **Assessment Edit** | `/assessment/{id}/task/{id}/edit/...` | Export (exam-ready Word only) |
+| **Marking** | `/assessment/{id}/class/marking` | Report |
+
+### Quick Report
+
+The Report tab is available on the **marking page** (`/class/marking`). It scrapes grades from the Cadmus grading view and renders two chart types:
+
+- **Mark Distribution** — per-mark bar chart coloured by Australian grade bands (HD, D, CR, P, F) with summary statistics (mean, median, min, max)
+- **Grade Breakdown** — grouped bars showing count and percentage per grade band
+
+Both charts support a **Special Consideration toggle** that splits bars side-by-side: solid colour for regular students, lighter shade for special consideration students. A **Copy chart** button copies the canvas to the clipboard as a PNG image. Max marks are auto-detected from the `score/total` format on the page.
 
 ### Bulk Edit
 
@@ -332,7 +366,8 @@ After making changes to the source files:
 ├── popup.css              # Popup styles
 ├── popup.js               # Main logic: parsers, UI wiring, injected actions
 ├── lib/
-│   └── xlsx.mini.min.js   # SheetJS library for browser-side Excel parsing
+│   ├── xlsx.mini.min.js   # SheetJS library for browser-side Excel parsing
+│   └── docx.min.js        # docx library (dolanmiu/docx) for Word document generation
 ├── icons/
 │   ├── icon16.png         # Toolbar icon
 │   ├── icon48.png         # Extensions page icon
@@ -360,7 +395,10 @@ After making changes to the source files:
 - **GraphQL API** — communicates with `https://api.cadmus.io/cadmus/api/graphql`
 - **React Fiber traversal** — extracts TanStack table state for selected-row detection
 - **SheetJS** — bundled locally for browser-side Excel parsing and export (no CDN dependency)
-- **Multi-format export** — Excel via SheetJS, CSV/JSON/QTI XML via string builders; all formats use Blob + hidden anchor download
+- **docx** — [dolanmiu/docx](https://github.com/dolanmiu/docx) v9.6.1, bundled locally for Word document generation with `keepNext` pagination control
+- **Multi-format export** — Excel via SheetJS, Word via docx, CSV/JSON/QTI XML via string builders; all formats use Blob + hidden anchor download
+- **Apollo cache extraction** — assessment edit pages have fully hydrated question data in the Apollo cache; the plugin reads it directly without API fetches
+- **Context-aware UI** — detects library, marking, and assessment edit pages via strict URL matching anchored to `cadmus.io/{tenant}/assessment/{id}/...`; source tab ID stored in session storage for correct detection when popup opens as a separate window
 - **Matching data model** — Cadmus uses an inverted naming convention: `sourceSet` = answers (right side, `right_N`), `targetSet` = prompts (left side, `left_N`), `correctValues` = `"left_N right_N"` pairs
 - **Duplicate detection** — Jaccard word-overlap similarity (70% threshold) against TanStack table data; no extra API calls for the scan
 
