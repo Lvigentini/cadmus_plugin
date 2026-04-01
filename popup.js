@@ -121,6 +121,15 @@ function setConnected(tenant, assessmentId, context) {
   const scopeEl = document.querySelector('.export-scope');
   if (scopeEl) scopeEl.style.display = context === 'assessment' ? 'none' : '';
 
+  // On assessment page: only show exam-ready Word export
+  const fmtSelect = $('#export-format');
+  if (fmtSelect) {
+    for (const opt of fmtSelect.options) {
+      opt.hidden = context === 'assessment' && opt.value !== 'docx-exam';
+    }
+    if (context === 'assessment') fmtSelect.value = 'docx-exam';
+  }
+
   // Activate the first visible tab
   const firstVisible = context === 'marking' ? 'report' : context === 'assessment' ? 'export' : 'import';
   document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
