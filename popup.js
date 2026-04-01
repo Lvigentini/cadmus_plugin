@@ -45,16 +45,12 @@ function isNewer(latest, current) {
 let cadmusTabId = null;
 
 async function findCadmusTab() {
-  // Try all tabs matching Cadmus host — prefer library, then marking, then assessment edit
+  // Use the active tab in the current window — the user opens the plugin on the tab they want
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab?.url && /cadmus\.io/.test(activeTab.url)) return activeTab;
+  // Fallback: check if launched as a separate window (background.js), find the opener tab
   const tabs = await chrome.tabs.query({ url: 'https://*.cadmus.io/*' });
-  let libraryTab = null, markingTab = null, assessmentTab = null;
-  for (const tab of tabs) {
-    const url = tab.url || '';
-    if (/\/library\b/.test(url)) libraryTab = tab;
-    else if (/\/marking\b/.test(url)) markingTab = tab;
-    else if (/\/task\/[^/]+\/edit\//.test(url)) assessmentTab = tab;
-  }
-  return libraryTab || markingTab || assessmentTab || null;
+  return tabs[0] || null;
 }
 
 // ── Check context on popup open ──────────────────────────────────────────────
@@ -68,8 +64,9 @@ async function checkContext() {
   // Detect which Cadmus page we're on — extract tenant from path segment after host
   const tenantMatch = url.match(/cadmus\.io\/([^/]+)/);
   const tenant = tenantMatch ? tenantMatch[1] : 'unknown';
-  const isLibrary = /\/library\b/.test(url);
-  const isMarking = /\/marking\b/.test(url);
+  // Strict path matching — must be the specific page type at end of path
+  const isLibrary = /\/assessment\/[^/]+\/library\b/.test(url);
+  const isMarking = /\/class\/marking\b/.test(url);
   const isAssessment = /\/task\/[^/]+\/edit\//.test(url);
 
   if (isLibrary) {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cadmus Question Library Tools",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Import and export questions (Excel, CSV, JSON, QTI XML), bulk edit points & shuffle, and manage Cadmus MFA question libraries. Supports MCQ, Matching, Fill-in-Blank, and Short Answer types.",
   "author": "Lorenzo Vigentini <lorenzo@cogentixai.com>",
   "homepage_url": "https://github.com/Lvigentini/cadmus_plugin",
