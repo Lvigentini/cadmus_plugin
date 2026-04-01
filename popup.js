@@ -106,8 +106,12 @@ function setConnected(tenant, assessmentId, context) {
     if (btn) btn.style.display = visible ? '' : 'none';
   }
 
+  // Hide scope radio buttons on assessment page (always exports all)
+  const scopeEl = document.querySelector('.export-scope');
+  if (scopeEl) scopeEl.style.display = context === 'assessment' ? 'none' : '';
+
   // Activate the first visible tab
-  const firstVisible = context === 'marking' ? 'report' : 'import';
+  const firstVisible = context === 'marking' ? 'report' : context === 'assessment' ? 'export' : 'import';
   document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   const activeBtn = document.querySelector(`.tab[data-tab="${firstVisible}"]`);
