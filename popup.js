@@ -45,15 +45,16 @@ function isNewer(latest, current) {
 let cadmusTabId = null;
 
 async function findCadmusTab() {
-  // Try all tabs matching Cadmus host — prefer library, then marking
+  // Try all tabs matching Cadmus host — prefer library, then marking, then assessment edit
   const tabs = await chrome.tabs.query({ url: 'https://*.cadmus.io/*' });
-  let libraryTab = null, markingTab = null;
+  let libraryTab = null, markingTab = null, assessmentTab = null;
   for (const tab of tabs) {
     const url = tab.url || '';
     if (/\/library\b/.test(url)) libraryTab = tab;
     else if (/\/marking\b/.test(url)) markingTab = tab;
+    else if (/\/task\/[^/]+\/edit\//.test(url)) assessmentTab = tab;
   }
-  return libraryTab || markingTab || null;
+  return libraryTab || markingTab || assessmentTab || null;
 }
 
 // ── Check context on popup open ──────────────────────────────────────────────
@@ -69,36 +70,40 @@ async function checkContext() {
   const tenant = tenantMatch ? tenantMatch[1] : 'unknown';
   const isLibrary = /\/library\b/.test(url);
   const isMarking = /\/marking\b/.test(url);
+  const isAssessment = /\/task\/[^/]+\/edit\//.test(url);
 
   if (isLibrary) {
     setConnected(tenant, '', 'library');
   } else if (isMarking) {
     setConnected(tenant, '', 'marking');
+  } else if (isAssessment) {
+    setConnected(tenant, '', 'assessment');
   } else {
-    return setDisconnected('Navigate to a Cadmus Question Library or Marking page');
+    return setDisconnected('Navigate to a Cadmus Library, Marking, or Assessment page');
   }
 }
 
 function setConnected(tenant, assessmentId, context) {
   const status = $('#status');
   status.className = 'status status--connected';
-  const label = context === 'marking' ? 'Marking' : 'Library';
-  $('#status-text').textContent = `Connected — ${label} — ${tenant}`;
+  const labels = { library: 'Library', marking: 'Marking', assessment: 'Assessment' };
+  $('#status-text').textContent = `Connected — ${labels[context] || context} — ${tenant}`;
   $('#actions').classList.remove('disabled');
   document.body.dataset.tenant = tenant;
   document.body.dataset.assessmentId = assessmentId;
   document.body.dataset.context = context;
 
   // Show/hide tabs based on context
-  const libraryTabs = ['import', 'edit', 'export', 'delete'];
-  const markingTabs = ['report'];
-  for (const t of libraryTabs) {
-    const btn = document.querySelector(`.tab[data-tab="${t}"]`);
-    if (btn) btn.style.display = context === 'library' ? '' : 'none';
-  }
-  for (const t of markingTabs) {
-    const btn = document.querySelector(`.tab[data-tab="${t}"]`);
-    if (btn) btn.style.display = context === 'marking' ? '' : 'none';
+  const tabVisibility = {
+    import: context === 'library',
+    edit: context === 'library',
+    export: context === 'library' || context === 'assessment',
+    delete: context === 'library',
+    report: context === 'marking',
+  };
+  for (const [tab, visible] of Object.entries(tabVisibility)) {
+    const btn = document.querySelector(`.tab[data-tab="${tab}"]`);
+    if (btn) btn.style.display = visible ? '' : 'none';
   }
 
   // Activate the first visible tab
@@ -2859,6 +2864,115 @@ function downloadFile(content, filename, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+// ── Extract questions from assessment edit page (Apollo cache) ───────────────
+async function extractAssessmentQuestions() {
+  const tabId = cadmusTabId;
+  if (!tabId) throw new Error('No Cadmus tab found');
+
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      if (!window.__APOLLO_CLIENT__) return { error: 'Apollo Client not found — is the assessment page fully loaded?' };
+      const cache = window.__APOLLO_CLIENT__.cache.extract();
+
+      const assessmentId = window.location.href.match(/\/assessment\/([^/]+)\//)?.[1];
+      if (!assessmentId) return { error: 'Could not extract assessmentId from URL' };
+
+      const taskKey = Object.keys(cache['ROOT_QUERY'] || {})
+        .find(k => k.includes('"kind":"INDIVIDUAL"') && k.includes(assessmentId));
+      if (!taskKey) return { error: 'No INDIVIDUAL task found in cache — ensure the page is fully loaded' };
+
+      const taskRef = cache['ROOT_QUERY'][taskKey]?.__ref;
+      if (!taskRef) return { error: 'Task reference not found in cache' };
+      const task = cache[taskRef];
+      if (!task?.blocks) return { error: 'Task has no blocks' };
+
+      const questions = [];
+      for (const bRef of task.blocks) {
+        const block = cache[bRef.__ref];
+        if (!block || block.deleted || block.hidden) continue;
+        const q = block.question ? cache[block.question.__ref] : null;
+        if (!q) continue;
+        if (q.questionType === 'SECTION' || q.questionType === 'OVERVIEW') continue;
+
+        questions.push({
+          blockId: block.id,
+          points: block.points,
+          id: q.id,
+          questionType: q.questionType,
+          shortPrompt: q.shortPrompt,
+          body: q.body,
+        });
+      }
+
+      return { questions, source: window.location.href };
+    },
+  });
+
+  return result.result;
+}
+
+function normaliseAssessmentQuestion(raw, index) {
+  const body = raw.body || {};
+  const field = body.fields?.[0];
+  const inter = field?.interaction;
+
+  // Extract prompt text from ProseMirror JSON
+  let prompt = raw.shortPrompt || '';
+  try {
+    const doc = typeof body.promptDoc === 'string' ? JSON.parse(body.promptDoc) : body.promptDoc;
+    if (doc?.content) {
+      const texts = [];
+      const walk = (nodes) => {
+        for (const n of nodes) {
+          if (n.type === 'text' && n.text) texts.push(n.text);
+          else if (n.type === 'blankInline') texts.push('___');
+          else if (n.type === 'paragraph' && texts.length) texts.push('\n');
+          if (n.content) walk(n.content);
+        }
+      };
+      walk(doc.content);
+      prompt = texts.join('').trim() || prompt;
+    }
+  } catch (_) {}
+
+  const q = {
+    index: index + 1,
+    id: raw.id,
+    questionType: raw.questionType,
+    prompt,
+    feedback: body.feedback || '',
+    points: raw.points ?? 1,
+    correctValues: field?.response?.correctValues || [],
+  };
+
+  // MCQ choices
+  if (inter?.__typename === 'ChoiceInteraction') {
+    q.choices = (inter.choices || []).map(c => ({
+      text: c.content,
+      correct: (field.response?.correctValues || []).includes(c.identifier),
+    }));
+  }
+
+  // Matching pairs
+  if (inter?.__typename === 'MatchInteraction') {
+    const sources = inter.sourceSet || [];
+    const targets = inter.targetSet || [];
+    q.pairs = [];
+    for (const cv of (field.response?.correctValues || [])) {
+      const parts = cv.split(' ');
+      if (parts.length === 2) {
+        const tgt = targets.find(t => t.identifier === parts[0]);
+        const src = sources.find(s => s.identifier === parts[1]);
+        if (tgt && src) q.pairs.push({ left: tgt.content, right: src.content });
+      }
+    }
+  }
+
+  return q;
+}
+
 // ── Tab switching ────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach(t2 => t2.classList.remove('active'));
@@ -3064,18 +3178,40 @@ document.addEventListener('click', (e) => {
         const fmt = $('#export-format').value;
         const scope = document.querySelector('input[name="export-scope"]:checked')?.value || 'selected';
         const progress = $('#export-progress');
-        if (progress) { progress.style.display = 'block'; progress.textContent = 'Fetching question data\u2026'; }
-        log(`Exporting ${scope} questions as ${fmt.toUpperCase()}\u2026`);
+        const isAssessment = document.body.dataset.context === 'assessment';
 
-        const result = await runAction('exportQuestions', { scope });
-        if (progress) progress.style.display = 'none';
-
-        if (!result || result.error) {
-          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
-          return; // runAction already logged the error
+        let data;
+        if (isAssessment) {
+          // Assessment edit page: extract from Apollo cache
+          if (progress) { progress.style.display = 'block'; progress.textContent = 'Reading assessment data from cache\u2026'; }
+          log('Extracting questions from assessment page\u2026');
+          const raw = await extractAssessmentQuestions();
+          if (progress) progress.style.display = 'none';
+          if (!raw || raw.error) {
+            log(raw?.error || 'Extraction failed', 'err');
+            document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+            return;
+          }
+          data = {
+            source: raw.source,
+            totalQuestions: raw.questions.length,
+            questions: raw.questions.map((q, i) => normaliseAssessmentQuestion(q, i)),
+          };
+          log(`Found ${data.questions.length} questions in assessment`, 'ok');
+        } else {
+          // Library page: use existing GraphQL export
+          if (progress) { progress.style.display = 'block'; progress.textContent = 'Fetching question data\u2026'; }
+          log(`Exporting ${scope} questions as ${fmt.toUpperCase()}\u2026`);
+          const result = await runAction('exportQuestions', { scope });
+          if (progress) progress.style.display = 'none';
+          if (!result || result.error) {
+            document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+            return;
+          }
+          data = result;
         }
 
-        const data = result;
+        const dummy = null; // keep the rest of the export code unchanged below
         if (!data.questions?.length) {
           log('No questions to export', 'err');
           document.querySelectorAll('.btn').forEach(b => b.disabled = false);
