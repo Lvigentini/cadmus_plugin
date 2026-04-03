@@ -335,6 +335,35 @@
           <button class="btn btn--grading-secondary" data-action="gradingExportUpdatedCsv" style="display:none" id="btn-export-updated-csv">Export Updated CSV</button>
         </div>
       </div>
+
+      <!-- Card 3: SHORT Answer Review (locked until data loaded) -->
+      <div class="card card--grading" id="card-grading-short" style="opacity:0.4;pointer-events:none">
+        <div class="card-body" style="padding-top:14px">
+          <p class="grading-step-label">Step 3 — SHORT Answer Review</p>
+          <p class="fix-hint">Review short answer responses alongside model answers. Upload a CSV/Excel if model answers are missing from Cadmus.</p>
+
+          <div id="grading-short-summary" class="grading-summary" style="display:none"></div>
+
+          <!-- Model answer mapping table -->
+          <div id="grading-short-mapping" style="display:none;margin:8px 0;max-height:200px;overflow-y:auto">
+            <table class="grading-mapping-table" id="grading-short-table">
+              <thead><tr><th>#</th><th>Question</th><th>Model Answer</th><th>Status</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <!-- Upload model answers -->
+          <label class="file-label file-label--small" style="margin:8px 0">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#546e7a" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span>Upload model answers (.xlsx / .csv) — optional</span>
+            <input type="file" id="grading-upload-answers" accept=".xlsx,.xls,.csv">
+          </label>
+
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="btn btn--grading-secondary" data-action="gradingExportShortCsv" style="flex:1">Export SHORT CSV</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══ DELETE TAB ═══ -->

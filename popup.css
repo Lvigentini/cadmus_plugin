@@ -518,6 +518,44 @@ label input[type="number"] {
   margin-top: 6px;
 }
 .btn--grading-secondary:hover { background: #455a64; }
+.grading-mapping-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.grading-mapping-table th {
+  text-align: left;
+  background: #f5f0fa;
+  color: #7b1fa2;
+  padding: 4px 6px;
+  font-weight: 600;
+  border-bottom: 2px solid #e0d6f0;
+}
+.grading-mapping-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid #eee;
+  vertical-align: top;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grading-mapping-table tr:hover td { background: #f8f4ff; }
+.grading-status-ok { color: #2e7d32; font-weight: 600; }
+.grading-status-missing { color: #d32f2f; font-weight: 600; }
+.file-label--small {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px dashed #90a4ae;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #546e7a;
+}
+.file-label--small input[type="file"] { display: none; }
+.file-label--small:hover { border-color: #546e7a; background: #f5f5f5; }
 label select {
   flex: 1;
   max-width: 200px;

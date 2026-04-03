@@ -1951,6 +1951,17 @@ function cadmusAction(action, options) {
       blanksFields: blanksAuditRows.length,
       fixCandidates: fixCandidates.length,
       shortFields: shortRows.length,
+      shortModelAnswers: shortIds.map((id, i) => {
+        const qBody = questionBodies[id];
+        const answer = qBody.fields[0]?.correctValues?.[0] || '';
+        return {
+          questionNo: i + 1,
+          questionId: id,
+          prompt: (qBody.promptText || '').substring(0, 120),
+          modelAnswer: answer.substring(0, 150),
+          hasAnswer: !!answer,
+        };
+      }),
       logs,
     };
   }
@@ -2086,7 +2097,32 @@ function cadmusAction(action, options) {
     return { csv, rows: rows.length, logs };
   }
 
-  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions, fixFIBQuestions, checkMatchingBalance, scanDuplicates, gradingLoadData, gradingExportBlanksCsv, gradingFixBlanks, gradingExportUpdatedCsv };
+  // --- Grading: Export SHORT Answers CSV ---
+  async function gradingExportShortCsv(opts) {
+    const rows = window.__gradingState?.shortRows;
+    if (!rows?.length) return { error: 'No SHORT answer data — run Load Data first' };
+
+    // Merge any uploaded model answers (passed from popup context)
+    const uploaded = opts.uploadedAnswers || {};
+
+    const cols = ['StudentName', 'StudentID', 'StudentEmail', 'QuestionNo', 'QuestionID',
+      'QuestionPrompt', 'ExpectedAnswer', 'StudentAnswer', 'AnswerSimilarity',
+      'AutomarkScore', 'FieldScore', 'FieldOutcomeId'];
+    const esc = v => { const s = String(v ?? '').replace(/"/g, '""'); return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s}"` : s; };
+
+    const enriched = rows.map(r => {
+      const override = uploaded[r.QuestionNo] || uploaded[r.QuestionID];
+      return {
+        ...r,
+        ExpectedAnswer: override || r.ExpectedAnswer || '',
+      };
+    });
+
+    const csv = [cols.join(','), ...enriched.map(r => cols.map(c => esc(r[c])).join(','))].join('\n');
+    return { csv, rows: enriched.length };
+  }
+
+  const actions = { editMCQ, editMatching, editShort, deleteSelected, importFIB, importMCQ, importMatching, importShort, exportQuestions, fixMatchingQuestions, fixFIBQuestions, checkMatchingBalance, scanDuplicates, gradingLoadData, gradingExportBlanksCsv, gradingFixBlanks, gradingExportUpdatedCsv, gradingExportShortCsv };
   return actions[action](options);
 }
 
@@ -3575,6 +3611,21 @@ document.addEventListener('click', (e) => {
             blanksSummary.style.display = 'block';
           }
           document.getElementById('btn-export-blanks-csv').style.display = '';
+          // Unlock SHORT card
+          const shortCard = document.getElementById('card-grading-short');
+          if (shortCard) { shortCard.style.opacity = '1'; shortCard.style.pointerEvents = 'auto'; }
+          // Populate SHORT model answer mapping table
+          if (result.shortModelAnswers) {
+            populateShortMappingTable(result.shortModelAnswers);
+          }
+          // Show SHORT summary
+          const shortSummary = document.getElementById('grading-short-summary');
+          if (shortSummary) {
+            const missing = (result.shortModelAnswers || []).filter(q => !q.hasAnswer).length;
+            shortSummary.innerHTML = `<strong>${result.shortFields}</strong> responses across <strong>${result.shortQuestions}</strong> questions` +
+              (missing > 0 ? ` | <span style="color:#d32f2f">${missing} missing model answer(s)</span>` : ' | all model answers available');
+            shortSummary.style.display = 'block';
+          }
         }
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
       })();
@@ -3619,6 +3670,20 @@ document.addEventListener('click', (e) => {
           const ts = new Date().toISOString().slice(0, 10);
           downloadFile(result.csv, `cadmus_blanks_updated_${ts}.csv`, 'text/csv');
           log(`Exported ${result.rows} updated rows`, 'ok');
+        }
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      })();
+      return;
+    case 'gradingExportShortCsv':
+      (async () => {
+        document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        log('Building SHORT answers CSV…');
+        const result = await runAction('gradingExportShortCsv', { uploadedAnswers: window.__gradingUploadedAnswers || {} });
+        if (result?.error) { logError(result.error); }
+        else if (result?.csv) {
+          const ts = new Date().toISOString().slice(0, 10);
+          downloadFile(result.csv, `cadmus_short_answers_${ts}.csv`, 'text/csv');
+          log(`Exported ${result.rows} rows`, 'ok');
         }
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
       })();
@@ -3850,6 +3915,92 @@ document.getElementById('btn-review-confirm')?.addEventListener('click', async (
 
   document.querySelectorAll('.btn').forEach(b => b.disabled = false);
   updateImportUI();
+});
+
+// ── Grading: SHORT answer model answer table + upload ────────────────────────
+
+function populateShortMappingTable(questions) {
+  const tbody = document.querySelector('#grading-short-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  for (const q of questions) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${q.questionNo}</td>` +
+      `<td title="${q.prompt}">${q.prompt}</td>` +
+      `<td title="${q.modelAnswer}">${q.modelAnswer || '—'}</td>` +
+      `<td class="${q.hasAnswer ? 'grading-status-ok' : 'grading-status-missing'}">${q.hasAnswer ? 'OK' : 'Missing'}</td>`;
+    tbody.appendChild(tr);
+  }
+  document.getElementById('grading-short-mapping').style.display = '';
+}
+
+// Upload model answers CSV/Excel to fill missing model answers
+document.getElementById('grading-upload-answers')?.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      let rows;
+      if (file.name.endsWith('.csv')) {
+        // Parse CSV
+        const text = ev.target.result;
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+        rows = lines.slice(1).map(line => {
+          const vals = line.match(/(".*?"|[^,]*)/g) || [];
+          const obj = {};
+          headers.forEach((h, i) => { obj[h] = (vals[i] || '').replace(/^"|"$/g, '').trim(); });
+          return obj;
+        });
+      } else {
+        // Parse Excel
+        const data = new Uint8Array(ev.target.result);
+        const wb = XLSX.read(data, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(ws);
+      }
+
+      // Build uploaded answers map: QuestionNo → ExpectedAnswer
+      const uploaded = {};
+      let matched = 0;
+      for (const row of rows) {
+        const qno = row['QuestionNo'] || row['#'] || row['questionNo'];
+        const answer = row['ExpectedAnswer'] || row['ModelAnswer'] || row['Expected Answer'] || row['Model Answer'] || row['Answer'];
+        if (qno && answer) {
+          uploaded[String(qno).trim()] = answer.trim();
+          matched++;
+        }
+      }
+
+      // Store for use by export actions
+      if (!window.__gradingUploadedAnswers) window.__gradingUploadedAnswers = {};
+      Object.assign(window.__gradingUploadedAnswers, uploaded);
+
+      // Update the mapping table to reflect uploads
+      const tableRows = document.querySelectorAll('#grading-short-table tbody tr');
+      for (const tr of tableRows) {
+        const qno = tr.cells[0].textContent;
+        if (uploaded[qno]) {
+          tr.cells[2].textContent = uploaded[qno].substring(0, 150);
+          tr.cells[2].title = uploaded[qno];
+          tr.cells[3].textContent = 'Uploaded';
+          tr.cells[3].className = 'grading-status-ok';
+        }
+      }
+
+      log(`Loaded ${matched} model answer(s) from ${file.name}`, 'ok');
+    } catch (err) {
+      log(`Upload failed: ${err.message}`, 'err');
+    }
+  };
+
+  if (file.name.endsWith('.csv')) {
+    reader.readAsText(file);
+  } else {
+    reader.readAsArrayBuffer(file);
+  }
 });
 
 // ── Grade scraping + chart rendering ─────────────────────────────────────────
