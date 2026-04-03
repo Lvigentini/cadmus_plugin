@@ -125,7 +125,7 @@ function setConnected(tenant, assessmentId, context) {
   const fmtSelect = $('#export-format');
   if (fmtSelect) {
     for (const opt of fmtSelect.options) {
-      opt.hidden = context === 'assessment' && opt.value !== 'docx-exam';
+      opt.hidden = context === 'assessment' && opt.value !== 'docx-exam' && opt.value !== 'docx-exam-key';
     }
     if (context === 'assessment') fmtSelect.value = 'docx-exam';
   }
@@ -2678,7 +2678,7 @@ ${items}
 </questestinterop>`;
 }
 
-async function exportToDocx(data, { randomise = false, examReady = false } = {}) {
+async function exportToDocx(data, { randomise = false, examReady = false, showAnswerKey = false } = {}) {
   const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell,
     WidthType, BorderStyle, AlignmentType } = docx;
 
@@ -2755,8 +2755,8 @@ async function exportToDocx(data, { randomise = false, examReady = false } = {})
           new TextRun({ text: `${label}. `, bold: true, size: 20 }),
           new TextRun({ text: c.text, size: 20 }),
         ];
-        // Only show correct marker in non-exam mode
-        if (!examReady && c.correct) {
+        // Show correct marker in full mode, or in exam+key mode
+        if (c.correct && (!examReady || showAnswerKey)) {
           runs.push(new TextRun({ text: '  ✓', bold: true, color: '2e7d32', size: 20 }));
         }
         qChildren.push(new Paragraph({ keepNext: true, indent: { left: 360 }, children: runs }));
@@ -2765,7 +2765,7 @@ async function exportToDocx(data, { randomise = false, examReady = false } = {})
 
     // Matching pairs
     else if (q.questionType === 'MATCHING' && q.pairs?.length) {
-      if (examReady) {
+      if (examReady && !showAnswerKey) {
         // Exam mode: show prompts on left, shuffled answer pool on right (not paired)
         const prompts = q.pairs.map(p => p.left);
         const answers = [...q.pairs.map(p => p.right)].sort(() => Math.random() - 0.5);
@@ -2810,21 +2810,24 @@ async function exportToDocx(data, { randomise = false, examReady = false } = {})
 
     // FIB
     else if (q.questionType === 'BLANKS') {
-      if (!examReady) {
+      if (!examReady || showAnswerKey) {
         const answers = (q.correctValues || []).join('; ');
         if (answers) {
           qChildren.push(new Paragraph({
             indent: { left: 360 },
-            children: [new TextRun({ text: 'Answers: ', bold: true, size: 20 }), new TextRun({ text: answers, size: 20 })],
+            children: [
+              new TextRun({ text: 'Answers: ', bold: true, size: 20, color: showAnswerKey ? '2e7d32' : undefined }),
+              new TextRun({ text: answers, size: 20, color: showAnswerKey ? '2e7d32' : undefined }),
+            ],
           }));
         }
       }
-      // Exam mode: blanks are already in the prompt text as ___
+      // Exam mode without key: blanks are already in the prompt text as ___
     }
 
     // Short answer
     else if (q.questionType === 'SHORT') {
-      if (examReady) {
+      if (examReady && !showAnswerKey) {
         // Show blank lines for student to write
         qChildren.push(new Paragraph({ indent: { left: 360 }, spacing: { before: 200 }, children: [new TextRun({ text: '________________________________________', color: 'CCCCCC', size: 20 })] }));
       } else {
@@ -3283,8 +3286,13 @@ document.addEventListener('click', (e) => {
               downloadFile(blob, `${baseName}_exam.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
               break;
             }
+            case 'docx-exam-key': {
+              const blob = await exportToDocx(data, { randomise: true, examReady: true, showAnswerKey: true });
+              downloadFile(blob, `${baseName}_exam-key.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+              break;
+            }
           }
-          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)' };
+          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)', 'docx-exam-key': 'docx (exam + key)' };
           log(`Exported ${data.questions.length} question(s) as ${baseName}.${extMap[fmt] || fmt}`, 'ok');
         } catch (err) {
           log(`Export failed: ${err.message}`, 'err');
