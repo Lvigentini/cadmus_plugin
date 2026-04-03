@@ -466,6 +466,58 @@ label input[type="number"] {
   font-size: 15px;
 }
 .btn--export:hover { background: #1557b0; }
+
+/* ── Grading tab ── */
+.tab-help--warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #fff3e0;
+  border: 1px solid #ffe0b2;
+  color: #e65100;
+}
+.card--grading { border-color: #ffe0b2; }
+.grading-step-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e65100;
+  margin: 0 0 4px;
+}
+.grading-summary {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: #f8f9fb;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #333;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.btn--grading {
+  background: #e8a030;
+  color: #fff;
+  width: 100%;
+  justify-content: center;
+}
+.btn--grading:hover { background: #d09020; }
+.btn--grading-danger {
+  background: #d32f2f;
+  color: #fff;
+  width: 100%;
+  justify-content: center;
+  margin-top: 6px;
+}
+.btn--grading-danger:hover { background: #b71c1c; }
+.btn--grading-secondary {
+  background: #546e7a;
+  color: #fff;
+  width: 100%;
+  justify-content: center;
+  margin-top: 6px;
+}
+.btn--grading-secondary:hover { background: #455a64; }
 label select {
   flex: 1;
   max-width: 200px;
