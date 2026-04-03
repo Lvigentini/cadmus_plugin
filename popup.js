@@ -125,7 +125,7 @@ function setConnected(tenant, assessmentId, context) {
   const fmtSelect = $('#export-format');
   if (fmtSelect) {
     for (const opt of fmtSelect.options) {
-      opt.hidden = context === 'assessment' && opt.value !== 'docx-exam' && opt.value !== 'docx-exam-key';
+      opt.hidden = context === 'assessment' && !opt.value.startsWith('docx-exam');
     }
     if (context === 'assessment') fmtSelect.value = 'docx-exam';
   }
@@ -3291,8 +3291,13 @@ document.addEventListener('click', (e) => {
               downloadFile(blob, `${baseName}_exam-key.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
               break;
             }
+            case 'docx-exam-full': {
+              const blob = await exportToDocx(data, { randomise: true });
+              downloadFile(blob, `${baseName}_exam-full.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+              break;
+            }
           }
-          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)', 'docx-exam-key': 'docx (exam + key)' };
+          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)', 'docx-exam-key': 'docx (exam + key)', 'docx-exam-full': 'docx (exam full)' };
           log(`Exported ${data.questions.length} question(s) as ${baseName}.${extMap[fmt] || fmt}`, 'ok');
         } catch (err) {
           log(`Export failed: ${err.message}`, 'err');
