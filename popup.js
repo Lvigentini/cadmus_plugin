@@ -85,10 +85,12 @@ async function checkContext() {
     context = 'library';
   } else if (/^\/class\/marking\b/.test(path)) {
     context = 'marking';
+  } else if (/^\/grader\/moderate\b/.test(path)) {
+    context = 'moderation';
   } else if (/^\/task\/[^/]+\/edit\b/.test(path)) {
     context = 'assessment';
   } else {
-    return setDisconnected('Navigate to a Library, Marking, or Assessment Edit page');
+    return setDisconnected('Navigate to a Library, Marking, Assessment Edit, or Moderation page');
   }
 
   setConnected(tenant, baseMatch[2], context);
@@ -97,7 +99,7 @@ async function checkContext() {
 function setConnected(tenant, assessmentId, context) {
   const status = $('#status');
   status.className = 'status status--connected';
-  const labels = { library: 'Library', marking: 'Marking', assessment: 'Assessment' };
+  const labels = { library: 'Library', marking: 'Marking', assessment: 'Assessment', moderation: 'Moderation' };
   $('#status-text').textContent = `Connected — ${labels[context] || context} — ${tenant}`;
   $('#actions').classList.remove('disabled');
   document.body.dataset.tenant = tenant;
@@ -110,7 +112,7 @@ function setConnected(tenant, assessmentId, context) {
     edit: context === 'library',
     export: context === 'library' || context === 'assessment',
     delete: context === 'library',
-    report: context === 'marking',
+    report: context === 'marking' || context === 'moderation',
     grading: context === 'marking',
   };
   for (const [tab, visible] of Object.entries(tabVisibility)) {
@@ -132,7 +134,7 @@ function setConnected(tenant, assessmentId, context) {
   }
 
   // Activate the first visible tab
-  const firstVisible = context === 'marking' ? 'report' : context === 'assessment' ? 'export' : 'import';
+  const firstVisible = (context === 'marking' || context === 'moderation') ? 'report' : context === 'assessment' ? 'export' : 'import';
   document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   const activeBtn = document.querySelector(`.tab[data-tab="${firstVisible}"]`);
@@ -3695,11 +3697,13 @@ document.addEventListener('click', (e) => {
         log('Scanning grades…');
         try {
           const entries = await scrapeGrades();
-          if (!entries || !entries.length) { log('No grades found — is the marking view open?', 'err'); return; }
+          if (!entries || !entries.length) { log('No grades found — is the marking/moderation view open?', 'err'); return; }
           const detectedMax = entries[0].maxMark || parseInt($('#report-max').value, 10) || 50;
           $('#report-max').value = detectedMax;
+          const hasAdj = entries.some(e => e.adj != null && e.adj !== 0);
           const scCount = entries.filter(e => e.specialCon).length;
-          log(`Found ${entries.length} submissions (max ${detectedMax}, ${scCount} special consideration)`, 'ok');
+          const src = hasAdj ? 'Apollo cache' : 'DOM';
+          log(`Found ${entries.length} submissions (max ${detectedMax}${scCount ? `, ${scCount} special con.` : ''}${hasAdj ? ', with adjustments' : ''}) [${src}]`, 'ok');
           // Store scraped data for live re-rendering on toggle change
           window._reportData = { entries, maxMarks: detectedMax, chartType: action };
           renderReport();
@@ -4012,51 +4016,38 @@ async function scrapeGrades() {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      return new Promise(async (resolve) => {
-        const container = document.querySelector('.hkeu7y1');
-        if (!container) { resolve([]); return; }
-        container.scrollTop = 0;
-        await new Promise(r => setTimeout(r, 400));
+      const cache = window.__APOLLO_CLIENT__?.cache?.extract();
+      if (!cache) return [];
 
-        // gradesMap keyed by translateY position → { mark, specialCon }
-        const gradesMap = {};
-        const harvest = () => {
-          for (const row of document.querySelectorAll('._17jbumys')) {
-            const m = row.style.transform.match(/translateY\(([\d.]+)px\)/);
-            if (!m) continue;
-            const key = m[1];
-            // Get mark
-            for (const span of row.querySelectorAll('span._1b2wmd39._1b2wmd3a')) {
-              if (/^\d+\/\d+$/.test(span.textContent.trim())) {
-                const parts = span.textContent.trim().split('/');
-                // Detect special consideration tag
-                let specialCon = false;
-                const tagDivs = row.querySelectorAll('._15skffe4');
-                for (const d of tagDivs) {
-                  if (d.textContent.trim() === 'Special Con.') { specialCon = true; break; }
-                }
-                gradesMap[key] = {
-                  mark: parseInt(parts[0]),
-                  maxMark: parseInt(parts[1]),
-                  specialCon,
-                };
-                break;
-              }
-            }
-          }
-        };
-
-        let prev = -1, iters = 0;
-        while (container.scrollTop !== prev && iters < 300) {
-          prev = container.scrollTop;
-          harvest();
-          container.scrollTop += 300;
-          await new Promise(r => setTimeout(r, 120));
-          iters++;
-        }
-        harvest();
-        resolve(Object.values(gradesMap));
+      // Build enrollment lookup: workId → { specialCon }
+      const enrollMeta = {};
+      Object.values(cache).forEach(v => {
+        if (v?.__typename !== 'Enrollment' || v.deleted) return;
+        const workId = v.work?.__ref?.replace('Work:', '') || v.workId;
+        if (!workId) return;
+        // Check for special consideration flags in the enrollment or its tags
+        const tags = v.tags || [];
+        const specialCon = tags.some(t => /special\s*con/i.test(typeof t === 'string' ? t : t?.name || ''));
+        enrollMeta[workId] = { specialCon };
       });
+
+      const entries = [];
+      Object.values(cache).forEach(v => {
+        if (v?.__typename !== 'WorkOutcome') return;
+        const sb = v.scoreBreakdown;
+        if (!sb || sb.score == null) return;
+        const meta = enrollMeta[v.workId] || {};
+        entries.push({
+          mark: sb.score,
+          maxMark: v.maxScore ?? 0,
+          automark: sb.automark ?? 0,
+          markerModifier: sb.markerModifier ?? 0,
+          moderatorModifier: sb.moderatorModifier ?? 0,
+          adj: (sb.markerModifier ?? 0) + (sb.moderatorModifier ?? 0),
+          specialCon: meta.specialCon || false,
+        });
+      });
+      return entries;
     },
   });
   return result.result || [];
@@ -4130,34 +4121,80 @@ function fmtCountPct(count, total) {
 }
 
 function renderDistributionChart(container, entries, maxMarks, splitSC) {
+  const hasAdj = entries.some(e => e.adj != null && e.adj !== 0);
   const allMarks = entries.map(e => e.mark);
   const total = entries.length;
   const stats = computeStats(allMarks);
   const scCount = entries.filter(e => e.specialCon).length;
 
+  // Automark-only scores (before adjustments)
+  const autoMarks = hasAdj ? entries.map(e => e.automark ?? (e.mark - (e.adj || 0))) : null;
+  const autoStats = autoMarks ? computeStats(autoMarks) : null;
+
+  // Build frequency buckets — original scores
   const freqAll = {}, freqReg = {}, freqSC = {};
   for (let i = 0; i <= maxMarks; i++) { freqAll[i] = 0; freqReg[i] = 0; freqSC[i] = 0; }
   for (const e of entries) {
     if (e.mark >= 0 && e.mark <= maxMarks) {
-      freqAll[e.mark]++;
-      if (e.specialCon) freqSC[e.mark]++; else freqReg[e.mark]++;
+      const bin = Math.round(e.mark);
+      freqAll[bin]++;
+      if (e.specialCon) freqSC[bin]++; else freqReg[bin]++;
     }
   }
 
-  const labels = Object.keys(freqAll).map(Number).filter(k => freqAll[k] > 0);
-  const maxCount = Math.max(...labels.map(k => splitSC ? Math.max(freqReg[k], freqSC[k]) : freqAll[k]), 1);
+  // Build automark frequency buckets (pre-adjustment) if available
+  const freqAuto = {};
+  if (hasAdj) {
+    for (let i = 0; i <= maxMarks; i++) freqAuto[i] = 0;
+    for (const e of entries) {
+      const pre = e.automark ?? (e.mark - (e.adj || 0));
+      const bin = Math.max(0, Math.min(maxMarks, Math.round(pre)));
+      freqAuto[bin]++;
+    }
+  }
 
+  // Merge label sets from both distributions
+  const labelSet = new Set(Object.keys(freqAll).map(Number).filter(k => freqAll[k] > 0));
+  if (hasAdj) Object.keys(freqAuto).map(Number).filter(k => freqAuto[k] > 0).forEach(k => labelSet.add(k));
+  const labels = [...labelSet].sort((a, b) => a - b);
+
+  const peakCount = hasAdj
+    ? Math.max(...labels.map(k => Math.max(freqAll[k] || 0, freqAuto[k] || 0)), 1)
+    : Math.max(...labels.map(k => splitSC ? Math.max(freqReg[k], freqSC[k]) : freqAll[k]), 1);
+
+  // Title
   const title = document.createElement('div');
   title.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:2px;color:#1a1a2e;';
   title.textContent = `Mark Distribution — ${total} submissions (out of ${maxMarks} marks)`;
 
+  // Stats lines
   const statsEl = document.createElement('div');
-  statsEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:12px;';
-  let statsText = `Mean: ${stats.mean}  |  Median: ${stats.median}  |  Min: ${stats.min}  |  Max: ${stats.max}`;
-  if (scCount > 0) statsText += `  |  Special Con: ${scCount}`;
-  statsEl.textContent = statsText;
+  statsEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:4px;';
+  if (hasAdj) {
+    statsEl.textContent = `After Adj  →  Mean: ${stats.mean}  |  Median: ${stats.median}  |  Min: ${stats.min}  |  Max: ${stats.max}`;
+  } else {
+    let statsText = `Mean: ${stats.mean}  |  Median: ${stats.median}  |  Min: ${stats.min}  |  Max: ${stats.max}`;
+    if (scCount > 0) statsText += `  |  Special Con: ${scCount}`;
+    statsEl.textContent = statsText;
+  }
 
-  const slotW = splitSC ? Math.max(18, Math.min(40, Math.floor(600 / labels.length))) : Math.max(14, Math.min(32, Math.floor(580 / labels.length)));
+  const statsEls = [statsEl];
+  if (hasAdj) {
+    const autoEl = document.createElement('div');
+    autoEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:4px;';
+    autoEl.textContent = `Automark   →  Mean: ${autoStats.mean}  |  Median: ${autoStats.median}  |  Min: ${autoStats.min}  |  Max: ${autoStats.max}`;
+    statsEls.push(autoEl);
+
+    const adjVals = entries.map(e => e.adj || 0);
+    const adjStats = computeStats(adjVals);
+    const adjEl = document.createElement('div');
+    adjEl.style.cssText = 'font-size:12px;color:#b07020;margin-bottom:12px;';
+    adjEl.textContent = `Adjustments →  Mean: ${adjStats.mean}  |  Median: ${adjStats.median}  |  Min: ${adjStats.min}  |  Max: ${adjStats.max}`;
+    statsEls.push(adjEl);
+  }
+
+  // Canvas
+  const slotW = (hasAdj || splitSC) ? Math.max(18, Math.min(40, Math.floor(600 / labels.length))) : Math.max(14, Math.min(32, Math.floor(580 / labels.length)));
   const canvas = document.createElement('canvas');
   canvas.width = labels.length * slotW + 60;
   canvas.height = 270;
@@ -4174,17 +4211,46 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
     ctx.strokeStyle = '#dde'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
     ctx.fillStyle = '#888'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
-    ctx.fillText(Math.round((i / 5) * maxCount), padL - 4, y + 3);
+    ctx.fillText(Math.round((i / 5) * peakCount), padL - 4, y + 3);
   }
 
   labels.forEach((label, i) => {
     const x = padL + i * slotW;
     const band = gradeFor(label, maxMarks);
 
-    if (splitSC) {
+    if (hasAdj) {
+      // Overlay mode: automark (orange outline behind) + final score (solid blue front)
+      const autoCount = freqAuto[label] || 0;
+      if (autoCount > 0) {
+        const barH = (autoCount / peakCount) * chartH;
+        const y = padT + chartH - barH;
+        ctx.fillStyle = 'rgba(244, 167, 66, 0.35)';
+        ctx.fillRect(x + 1, y, slotW - 2, barH);
+        ctx.strokeStyle = '#f4a742'; ctx.lineWidth = 1.5;
+        ctx.strokeRect(x + 1, y, slotW - 2, barH);
+      }
+      const finalCount = freqAll[label] || 0;
+      if (finalCount > 0) {
+        const barH = (finalCount / peakCount) * chartH;
+        const y = padT + chartH - barH;
+        ctx.fillStyle = 'rgba(91, 155, 213, 0.75)';
+        ctx.fillRect(x + 3, y, slotW - 6, barH);
+      }
+      // Count label
+      const topCount = Math.max(autoCount, finalCount);
+      if (topCount > 0) {
+        const topY = padT + chartH - (topCount / peakCount) * chartH;
+        ctx.fillStyle = '#333'; ctx.font = '8px sans-serif'; ctx.textAlign = 'center';
+        if (autoCount !== finalCount) {
+          ctx.fillText(`${autoCount}\u2192${finalCount}`, x + slotW / 2, topY - 2);
+        } else {
+          ctx.fillText(finalCount, x + slotW / 2, topY - 2);
+        }
+      }
+    } else if (splitSC) {
       const halfW = (slotW - 2) / 2;
       const regCount = freqReg[label];
-      const regH = (regCount / maxCount) * chartH;
+      const regH = (regCount / peakCount) * chartH;
       const regY = padT + chartH - regH;
       ctx.fillStyle = band.color;
       ctx.fillRect(x + 1, regY, halfW, regH);
@@ -4193,7 +4259,7 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
         ctx.fillText(regCount, x + 1 + halfW / 2, regY - 2);
       }
       const scCnt = freqSC[label];
-      const scH = (scCnt / maxCount) * chartH;
+      const scH = (scCnt / peakCount) * chartH;
       const scY = padT + chartH - scH;
       ctx.fillStyle = lightenColor(band.color, 0.45);
       ctx.fillRect(x + 1 + halfW, scY, halfW, scH);
@@ -4203,7 +4269,7 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
       }
     } else {
       const count = freqAll[label];
-      const barH = (count / maxCount) * chartH;
+      const barH = (count / peakCount) * chartH;
       const y = padT + chartH - barH;
       ctx.fillStyle = band.color;
       ctx.fillRect(x + 1, y, slotW - 2, barH);
@@ -4226,30 +4292,37 @@ function renderDistributionChart(container, entries, maxMarks, splitSC) {
   // Legend
   const legend = document.createElement('div');
   legend.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;font-size:11px;';
-  for (const band of GRADE_BANDS) {
-    const item = document.createElement('span');
-    item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${band.color};vertical-align:-1px;margin-right:3px"></span>${band.label} (${band.min}%+)`;
-    legend.appendChild(item);
-  }
-  if (splitSC) {
-    legend.innerHTML += `<span style="margin-left:6px">|</span><span><b style="margin-right:3px">■</b>Regular</span><span><b style="color:#bbb;margin-right:3px">■</b>Special Con.</span>`;
+  if (hasAdj) {
+    legend.innerHTML = '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:14px;height:14px;background:rgba(91,155,213,0.75);border-radius:2px;display:inline-block"></span> Final Score</span>' +
+      '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:14px;height:14px;background:rgba(244,167,66,0.35);border:1.5px solid #f4a742;border-radius:2px;display:inline-block;box-sizing:border-box"></span> Automark (pre-adj)</span>';
+  } else {
+    for (const band of GRADE_BANDS) {
+      const item = document.createElement('span');
+      item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${band.color};vertical-align:-1px;margin-right:3px"></span>${band.label} (${band.min}%+)`;
+      legend.appendChild(item);
+    }
+    if (splitSC) {
+      legend.innerHTML += `<span style="margin-left:6px">|</span><span><b style="margin-right:3px">■</b>Regular</span><span><b style="color:#bbb;margin-right:3px">■</b>Special Con.</span>`;
+    }
   }
 
   container.appendChild(title);
-  container.appendChild(statsEl);
+  statsEls.forEach(el => container.appendChild(el));
   container.appendChild(canvas);
   container.appendChild(legend);
   addCopyButton(container, canvas);
 }
 
 function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
+  const hasAdj = entries.some(e => e.adj != null && e.adj !== 0);
   const allMarks = entries.map(e => e.mark);
   const total = entries.length;
   const stats = computeStats(allMarks);
   const scTotal = entries.filter(e => e.specialCon).length;
   const regTotal = total - scTotal;
 
-  const buckets = GRADE_BANDS.map(b => ({ ...b, reg: 0, sc: 0, all: 0 }));
+  // Final score buckets
+  const buckets = GRADE_BANDS.map(b => ({ ...b, reg: 0, sc: 0, all: 0, auto: 0 }));
   for (const e of entries) {
     const band = gradeFor(e.mark, maxMarks);
     const bucket = buckets.find(b => b.label === band.label);
@@ -4257,7 +4330,19 @@ function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
     if (e.specialCon) bucket.sc++; else bucket.reg++;
   }
 
-  const maxCount = Math.max(...buckets.map(b => splitSC ? Math.max(b.reg, b.sc) : b.all), 1);
+  // Automark buckets (pre-adjustment)
+  if (hasAdj) {
+    for (const e of entries) {
+      const pre = e.automark ?? (e.mark - (e.adj || 0));
+      const band = gradeFor(pre, maxMarks);
+      const bucket = buckets.find(b => b.label === band.label);
+      bucket.auto++;
+    }
+  }
+
+  const peakVal = hasAdj
+    ? Math.max(...buckets.map(b => Math.max(b.all, b.auto)), 1)
+    : Math.max(...buckets.map(b => splitSC ? Math.max(b.reg, b.sc) : b.all), 1);
 
   const title = document.createElement('div');
   title.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:2px;color:#1a1a2e;';
@@ -4267,7 +4352,7 @@ function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
   statsEl.style.cssText = 'font-size:12px;color:#666;margin-bottom:12px;';
   statsEl.textContent = `Mean: ${stats.mean}  |  Median: ${stats.median}  |  Min: ${stats.min}  |  Max: ${stats.max}`;
 
-  const bandW = splitSC ? 110 : 80;
+  const bandW = (hasAdj || splitSC) ? 110 : 80;
   const canvas = document.createElement('canvas');
   canvas.width = buckets.length * bandW + 60;
   canvas.height = 240;
@@ -4285,16 +4370,35 @@ function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
     ctx.strokeStyle = '#dde'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
     ctx.fillStyle = '#888'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
-    ctx.fillText(Math.round((i / 4) * maxCount), padL - 4, y + 3);
+    ctx.fillText(Math.round((i / 4) * peakVal), padL - 4, y + 3);
   }
 
   buckets.forEach((bucket, i) => {
     const x = padL + i * bandW;
 
-    if (splitSC) {
+    if (hasAdj) {
       const halfW = (bandW - 16) / 2;
-      // Regular
-      const regH = bucket.reg > 0 ? (bucket.reg / maxCount) * barH : 0;
+      // Automark (orange, left)
+      const autoH = bucket.auto > 0 ? (bucket.auto / peakVal) * barH : 0;
+      const autoY = padT + barH - autoH;
+      ctx.fillStyle = 'rgba(244, 167, 66, 0.55)';
+      ctx.fillRect(x + 8, autoY, halfW, autoH);
+      if (bucket.auto > 0) {
+        ctx.fillStyle = '#333'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(fmtCountPct(bucket.auto, total), x + 8 + halfW / 2, autoY - 3);
+      }
+      // Final (blue, right)
+      const finalH = bucket.all > 0 ? (bucket.all / peakVal) * barH : 0;
+      const finalY = padT + barH - finalH;
+      ctx.fillStyle = 'rgba(91, 155, 213, 0.75)';
+      ctx.fillRect(x + 8 + halfW, finalY, halfW, finalH);
+      if (bucket.all > 0) {
+        ctx.fillStyle = '#333'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(fmtCountPct(bucket.all, total), x + 8 + halfW + halfW / 2, finalY - 3);
+      }
+    } else if (splitSC) {
+      const halfW = (bandW - 16) / 2;
+      const regH = bucket.reg > 0 ? (bucket.reg / peakVal) * barH : 0;
       const regY = padT + barH - regH;
       ctx.fillStyle = bucket.color;
       ctx.fillRect(x + 8, regY, halfW, regH);
@@ -4302,8 +4406,7 @@ function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
         ctx.fillStyle = '#333'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
         ctx.fillText(fmtCountPct(bucket.reg, regTotal), x + 8 + halfW / 2, regY - 3);
       }
-      // SC
-      const scH = bucket.sc > 0 ? (bucket.sc / maxCount) * barH : 0;
+      const scH = bucket.sc > 0 ? (bucket.sc / peakVal) * barH : 0;
       const scY = padT + barH - scH;
       ctx.fillStyle = lightenColor(bucket.color, 0.45);
       ctx.fillRect(x + 8 + halfW, scY, halfW, scH);
@@ -4312,7 +4415,7 @@ function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
         ctx.fillText(fmtCountPct(bucket.sc, scTotal), x + 8 + halfW + halfW / 2, scY - 3);
       }
     } else {
-      const bH = bucket.all > 0 ? (bucket.all / maxCount) * barH : 0;
+      const bH = bucket.all > 0 ? (bucket.all / peakVal) * barH : 0;
       const y = padT + barH - bH;
       ctx.fillStyle = bucket.color;
       ctx.fillRect(x + 8, y, bandW - 16, bH);
@@ -4339,13 +4442,18 @@ function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
   // Legend
   const legend = document.createElement('div');
   legend.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;font-size:11px;';
-  for (const band of GRADE_BANDS) {
-    const item = document.createElement('span');
-    item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${band.color};vertical-align:-1px;margin-right:3px"></span>${band.label}`;
-    legend.appendChild(item);
-  }
-  if (splitSC) {
-    legend.innerHTML += `<span style="margin-left:6px">|</span><span><b style="margin-right:3px">■</b>Regular (n=${regTotal})</span><span><b style="color:#bbb;margin-right:3px">■</b>Special Con. (n=${scTotal})</span>`;
+  if (hasAdj) {
+    legend.innerHTML = '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:14px;height:14px;background:rgba(244,167,66,0.55);border-radius:2px;display:inline-block"></span> Automark (pre-adj)</span>' +
+      '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:14px;height:14px;background:rgba(91,155,213,0.75);border-radius:2px;display:inline-block"></span> Final Score</span>';
+  } else {
+    for (const band of GRADE_BANDS) {
+      const item = document.createElement('span');
+      item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${band.color};vertical-align:-1px;margin-right:3px"></span>${band.label}`;
+      legend.appendChild(item);
+    }
+    if (splitSC) {
+      legend.innerHTML += `<span style="margin-left:6px">|</span><span><b style="margin-right:3px">■</b>Regular (n=${regTotal})</span><span><b style="color:#bbb;margin-right:3px">■</b>Special Con. (n=${scTotal})</span>`;
+    }
   }
 
   container.appendChild(title);
