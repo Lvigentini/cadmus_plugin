@@ -1,6 +1,6 @@
 # Cadmus Question Library Tools
 
-A Chrome extension that enhances the [Cadmus](https://cadmus.io) assessment platform with tools for managing question libraries, exporting assessments, and reporting on student marks. It works across three Cadmus pages: the **Question Library** (import, export, edit, delete), the **Assessment Edit** page (export questions as an exam-ready Word document), and the **Marking** page (grade distribution and breakdown charts).
+A Chrome extension that enhances the [Cadmus](https://cadmus.io) assessment platform with tools for managing question libraries, exporting assessments, grading audits, and comprehensive learning analytics. It works across four Cadmus pages: the **Question Library** (import, export, edit, delete), the **Assessment Edit** page (export questions as an exam-ready Word document), the **Marking** page (grade distribution, grading audits, and analysis reports), and the **Moderation** page (score distribution with adjustment overlays and full analysis suite).
 
 ---
 
@@ -239,16 +239,60 @@ The plugin auto-detects which Cadmus page you are on and shows only the relevant
 |------|-------------|------------|
 | **Question Library** | `/assessment/{id}/library` | Import, Bulk Edit, Export, Delete |
 | **Assessment Edit** | `/assessment/{id}/task/{id}/edit/...` | Export (exam-ready Word only) |
-| **Marking** | `/assessment/{id}/class/marking` | Report |
+| **Marking** | `/assessment/{id}/class/marking` | Report, Grading, Analysis |
+| **Moderation** | `/assessment/{id}/grader/moderate/...` | Report, Analysis |
+| **Learning Assurance** | `/assessment/{id}/learning-assurance` | Report, Analysis |
 
-### Quick Report
+### Score Distribution Reports
 
-The Report tab is available on the **marking page** (`/class/marking`). It scrapes grades from the Cadmus grading view and renders two chart types:
+The Report tab is available on the **Marking**, **Moderation**, and **Learning Assurance** pages. All grade data is read directly from the Apollo cache (instant, no DOM scraping). Two core chart types are available:
 
-- **Mark Distribution** — per-mark bar chart coloured by Australian grade bands (HD, D, CR, P, F) with summary statistics (mean, median, min, max)
-- **Grade Breakdown** — grouped bars showing count and percentage per grade band
+- **Mark Distribution** — per-mark bar chart coloured by Australian grade bands (F, P, CR, D, HD) with summary statistics (mean, median, min, max). On the moderation page, shows an overlaid automark-vs-adjusted distribution with separate stats for each.
+- **Grade Breakdown** — grouped bars showing count and percentage per grade band. On the moderation page, shows side-by-side automark (pre-adjustment) vs final score bands.
 
-Both charts support a **Special Consideration toggle** that splits bars side-by-side: solid colour for regular students, lighter shade for special consideration students. A **Copy chart** button copies the canvas to the clipboard as a PNG image. Max marks are auto-detected from the `score/total` format on the page.
+Both charts support a **Special Consideration toggle** that splits bars side-by-side: solid colour for regular students, lighter shade for special consideration students. A **Copy chart** button copies the canvas to the clipboard as a PNG image. Max marks are auto-detected from the `WorkOutcome.maxScore` field.
+
+### Analysis Reports
+
+Eight analysis reports are available from the Report tab. All reports extract data from the Cadmus Apollo cache (`window.__APOLLO_CLIENT__`) and cross-reference users, enrollments, access codes, work outcomes, question outcomes, question tags, submissions, and work settings.
+
+#### Group Comparison
+
+A single generic report that supports multiple grouping dimensions, auto-detected from the Apollo cache data. The user selects a grouping from a dropdown; changing the selection re-renders the report immediately without reloading data.
+
+| Grouping Dimension | Detection Criteria | Example Groups |
+|---|---|---|
+| **Access Code** | `Enrollment.verifiedCodes[].label` — shown when ≥2 distinct codes | Fremantle Tute 1, Sydney Tute 1, Online |
+| **Exam Sitting** | `WorkSettings.examDeferred` — shown when at least one deferred student | Standard, Deferred |
+| **Enrollment Tags** | `Enrollment.tags[]` — shown when ≥2 distinct tags | Special Con., Extension, etc. |
+| **Submission Type** | `Submission.forceSubmitted` — shown when at least one forced | Self-submitted, Force-submitted |
+| **Score Quartile** | Always available as fallback | Q1 (0–25%), Q2 (25–50%), Q3 (50–75%), Q4 (75–100%) |
+
+For each group: n, mean %, median %, SD, min, max. Groups deviating >1 SD from the cohort mean are flagged. A grouped bar chart shows grade band distribution (F → HD) per group.
+
+#### Learning Assurance
+
+| Report | Description | Data Sources |
+|--------|-------------|--------------|
+| **Cognitive Complexity** | Performance heatmap by cognitive level (remember → create). Colour-coded cells: green (≥70%), yellow (50–70%), red (<50%). Bar chart of mean % correct per level. | `QuestionTag` (bloom levels), `QuestionOutcome.scoreBreakdown` |
+| **Topic / Week** | Performance by curriculum topic or week number. Shows question counts, point totals, question types, and mean/median/SD per topic. | `QuestionTag` (week/topic labels), `QuestionOutcome.scoreBreakdown` |
+| **Difficulty Analysis** | Validates tagged difficulty (EASY/MEDIUM/HARD) against actual student performance. Flags mismatches (e.g., "EASY" questions with <60% mean). Reference threshold lines on chart. | `Question.difficulty`, `QuestionOutcome.scoreBreakdown` |
+| **Question Type** | Breakdown by question format (MCQ, BLANKS, SHORT, MATCHING). Shows question count, total points, weight contribution, and performance stats. | `Question.questionType`, `Question.points`, `QuestionOutcome.scoreBreakdown` |
+
+#### Exam Integrity & Marking Quality
+
+| Report | Description | Data Sources |
+|--------|-------------|--------------|
+| **Exam Timing** | Histogram of actual exam duration (5-min buckets). Writing time limit shown as reference line. Stacked bars for submitted vs force-submitted. Flags students using <50% of allocated time or force-submitted. | `Work.startDate`, `Submission.submittedAt`, `Submission.forceSubmitted`, `AssessmentSettings.examWritingTime` |
+| **Automark Analysis** | Distribution of marker adjustments (markerModifier) per student. Per-question-type breakdown showing automark mean, adjustment mean/SD/range, and direction (markers add/reduce/neutral). Histogram coloured by positive/negative adjustment. | `WorkOutcome.scoreBreakdown`, `QuestionOutcome.scoreBreakdown` |
+
+#### Data Model
+
+All analysis reports share a common data extraction and model-building pipeline:
+
+1. **`loadAnalysisData()`** — executes in the page context (`world: 'MAIN'`) to read the Apollo cache. Extracts slim versions of 14 entity types (User, Enrollment, AccessCode, WorkOutcome, QuestionOutcome, Question, QuestionTag, Work, Submission, WorkSettings, AssessmentSettings, etc.).
+2. **`buildAnalysisModel(raw)`** — runs in the popup context. Builds relationship maps (user→enrollment→work→outcome→question) and computes derived fields: tute group membership, deferred status, exam duration, Bloom's level, week/topic tags, difficulty validation.
+3. **Individual renderers** — each report function receives the processed model and renders a combination of HTML tables (`analysis-table` class) and canvas-based charts. All charts include a "Copy chart" button.
 
 ### Bulk Edit
 

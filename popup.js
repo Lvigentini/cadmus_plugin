@@ -87,10 +87,12 @@ async function checkContext() {
     context = 'marking';
   } else if (/^\/grader\/moderate\b/.test(path)) {
     context = 'moderation';
+  } else if (/^\/learning-assurance\b/.test(path)) {
+    context = 'learning-assurance';
   } else if (/^\/task\/[^/]+\/edit\b/.test(path)) {
     context = 'assessment';
   } else {
-    return setDisconnected('Navigate to a Library, Marking, Assessment Edit, or Moderation page');
+    return setDisconnected('Navigate to a Library, Marking, Assessment Edit, Moderation, or Learning Assurance page');
   }
 
   setConnected(tenant, baseMatch[2], context);
@@ -99,7 +101,7 @@ async function checkContext() {
 function setConnected(tenant, assessmentId, context) {
   const status = $('#status');
   status.className = 'status status--connected';
-  const labels = { library: 'Library', marking: 'Marking', assessment: 'Assessment', moderation: 'Moderation' };
+  const labels = { library: 'Library', marking: 'Marking', assessment: 'Assessment', moderation: 'Moderation', 'learning-assurance': 'Learning Assurance' };
   $('#status-text').textContent = `Connected — ${labels[context] || context} — ${tenant}`;
   $('#actions').classList.remove('disabled');
   document.body.dataset.tenant = tenant;
@@ -112,7 +114,7 @@ function setConnected(tenant, assessmentId, context) {
     edit: context === 'library',
     export: context === 'library' || context === 'assessment',
     delete: context === 'library',
-    report: context === 'marking' || context === 'moderation',
+    report: context === 'marking' || context === 'moderation' || context === 'learning-assurance',
     grading: context === 'marking',
   };
   for (const [tab, visible] of Object.entries(tabVisibility)) {
@@ -134,7 +136,7 @@ function setConnected(tenant, assessmentId, context) {
   }
 
   // Activate the first visible tab
-  const firstVisible = (context === 'marking' || context === 'moderation') ? 'report' : context === 'assessment' ? 'export' : 'import';
+  const firstVisible = (context === 'marking' || context === 'moderation' || context === 'learning-assurance') ? 'report' : context === 'assessment' ? 'export' : 'import';
   document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   const activeBtn = document.querySelector(`.tab[data-tab="${firstVisible}"]`);
@@ -3100,39 +3102,70 @@ async function exportToDocx(data, { randomise = false, examReady = false, showAn
   const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell,
     WidthType, BorderStyle, AlignmentType } = docx;
 
-  const questions = [...data.questions];
+  const allQuestions = [...data.questions];
 
-  if (randomise) {
-    for (let i = questions.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [questions[i], questions[j]] = [questions[j], questions[i]];
+  // Group by section (sectionIndex 0 = no sections defined → treat as single group)
+  const hasSections = allQuestions.some(q => q.sectionIndex > 0);
+  const sectionMap = new Map();
+  for (const q of allQuestions) {
+    const key = hasSections ? q.sectionIndex : 0;
+    if (!sectionMap.has(key)) sectionMap.set(key, { title: q.sectionTitle || '', questions: [] });
+    sectionMap.get(key).questions.push(q);
+  }
+
+  // Sort sections by their index key
+  const sections = [...sectionMap.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, v]) => v);
+
+  // Within each section: shuffle or sort by type
+  const typeOrder = { MCQ: 0, MATCHING: 1, BLANKS: 2, SHORT: 3 };
+  for (const sec of sections) {
+    if (randomise) {
+      for (let i = sec.questions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [sec.questions[i], sec.questions[j]] = [sec.questions[j], sec.questions[i]];
+      }
+    } else {
+      sec.questions.sort((a, b) => (typeOrder[a.questionType] ?? 9) - (typeOrder[b.questionType] ?? 9));
     }
-  } else {
-    const typeOrder = { MCQ: 0, MATCHING: 1, BLANKS: 2, SHORT: 3 };
-    questions.sort((a, b) => (typeOrder[a.questionType] ?? 9) - (typeOrder[b.questionType] ?? 9));
   }
 
   const typeLabels = { MCQ: 'Multiple Choice', MATCHING: 'Matching', BLANKS: 'Fill-in-the-Blank', SHORT: 'Short Answer' };
   const children = [];
-  let currentType = null;
-  let qNum = 0;
 
-  for (let qi = 0; qi < questions.length; qi++) {
-    const q = questions[qi];
+  for (let si = 0; si < sections.length; si++) {
+    const sec = sections[si];
+
+    // Section / part heading
+    if (hasSections && sec.title) {
+      if (si > 0) children.push(new Paragraph({ pageBreakBefore: true }));
+      children.push(new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        children: [new TextRun({ text: sec.title, bold: true, size: 32 })],
+        spacing: { after: 200 },
+      }));
+    }
+
+    let currentType = null;
+    let qNum = 0;
+
+  for (let qi = 0; qi < sec.questions.length; qi++) {
+    const q = sec.questions[qi];
     qNum++;
 
-    // Section heading when type changes (sorted modes only)
+    // Sub-heading when type changes (sorted/non-randomised mode, and either no sections or within a section)
     if (!randomise && q.questionType !== currentType) {
       currentType = q.questionType;
-      if (qi > 0) {
+      if (!hasSections && qi > 0) {
         children.push(new Paragraph({ pageBreakBefore: true }));
       }
       children.push(new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: typeLabels[q.questionType] || q.questionType, bold: true, size: 32 })],
-        spacing: { after: 200 },
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun({ text: typeLabels[q.questionType] || q.questionType, bold: true, size: 26 })],
+        spacing: { after: 160 },
       }));
-      qNum = 1;  // restart numbering per section
+      qNum = 1;  // restart numbering per type group
     }
 
     const qChildren = [];
@@ -3279,7 +3312,8 @@ async function exportToDocx(data, { randomise = false, examReady = false, showAn
     }));
 
     children.push(...qChildren);
-  }
+  } // end questions loop
+  } // end sections loop
 
   const doc = new Document({
     sections: [{
@@ -3321,37 +3355,83 @@ async function extractAssessmentQuestions() {
       if (!window.__APOLLO_CLIENT__) return { error: 'Apollo Client not found — is the assessment page fully loaded?' };
       const cache = window.__APOLLO_CLIENT__.cache.extract();
 
-      const assessmentId = window.location.href.match(/\/assessment\/([^/]+)\//)?.[1];
+      const assessmentId = window.location.href.match(/\/assessment\/([^/?#]+)/)?.[1];
       if (!assessmentId) return { error: 'Could not extract assessmentId from URL' };
 
-      const taskKey = Object.keys(cache['ROOT_QUERY'] || {})
-        .find(k => k.includes('"kind":"INDIVIDUAL"') && k.includes(assessmentId));
-      if (!taskKey) return { error: 'No INDIVIDUAL task found in cache — ensure the page is fully loaded' };
+      const rootKeys = Object.keys(cache['ROOT_QUERY'] || {});
+      // Prefer INDIVIDUAL, then GROUP, then any task query containing the assessmentId
+      const taskKey = rootKeys.find(k => k.includes('"kind":"INDIVIDUAL"') && k.includes(assessmentId))
+        || rootKeys.find(k => k.includes('"kind":"GROUP"') && k.includes(assessmentId))
+        || rootKeys.find(k => k.includes(assessmentId) && (k.startsWith('task(') || k.startsWith('taskByAssessment(')));
+      if (!taskKey) return { error: 'No task found in cache for this assessment — ensure the page is fully loaded' };
 
       const taskRef = cache['ROOT_QUERY'][taskKey]?.__ref;
       if (!taskRef) return { error: 'Task reference not found in cache' };
       const task = cache[taskRef];
       if (!task?.blocks) return { error: 'Task has no blocks' };
 
+      // Resolve assessment name: task object fields → page title fallback
+      const assessmentName = task.name || task.title
+        || cache[task.assessment?.__ref]?.name
+        || cache[task.assessment?.__ref]?.title
+        || document.title.replace(/\s*[-|].*$/, '').trim()
+        || '';
+
+      // Helper: extract plain text from a ProseMirror JSON doc
+      const extractDocText = (raw) => {
+        try {
+          const doc = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          const texts = [];
+          const walk = (nodes) => {
+            for (const n of (nodes || [])) {
+              if (n.type === 'text' && n.text) texts.push(n.text);
+              if (n.content) walk(n.content);
+            }
+          };
+          walk(doc?.content);
+          return texts.join('').trim();
+        } catch (_) { return ''; }
+      };
+
       const questions = [];
+      let sectionTitle = '';
+      let sectionIndex = 0;
+
       for (const bRef of task.blocks) {
         const block = cache[bRef.__ref];
         if (!block || block.deleted || block.hidden) continue;
         const q = block.question ? cache[block.question.__ref] : null;
         if (!q) continue;
-        if (q.questionType === 'SECTION' || q.questionType === 'OVERVIEW') continue;
+
+        if (q.questionType === 'OVERVIEW') continue;
+
+        if (q.questionType === 'SECTION') {
+          sectionIndex++;
+          sectionTitle = q.shortPrompt
+            || extractDocText(q.body?.promptDoc)
+            || `Part ${sectionIndex}`;
+          continue;
+        }
+
+        // Resolve tag names from refs
+        const tags = (q.tags || [])
+          .map(ref => cache[ref?.__ref]?.name).filter(Boolean);
 
         questions.push({
           blockId: block.id,
-          points: block.points,
+          points: block.points ?? q.points,
           id: q.id,
           questionType: q.questionType,
           shortPrompt: q.shortPrompt,
           body: q.body,
+          difficulty: q.difficulty || '',
+          tags,
+          sectionTitle,
+          sectionIndex,
         });
       }
 
-      return { questions, source: window.location.href };
+      return { questions, assessmentName, source: window.location.href };
     },
   });
 
@@ -3389,6 +3469,10 @@ function normaliseAssessmentQuestion(raw, index) {
     prompt,
     feedback: body.feedback || '',
     points: raw.points ?? 1,
+    difficulty: raw.difficulty || '',
+    tags: raw.tags || [],
+    sectionTitle: raw.sectionTitle || '',
+    sectionIndex: raw.sectionIndex || 0,
     correctValues: field?.response?.correctValues || [],
   };
 
@@ -3537,6 +3621,15 @@ document.addEventListener('click', (e) => {
   toggle.querySelector('.toggle-label-text').textContent = isActive ? 'On' : 'Off';
   // Live re-render report charts when SC toggle changes
   if (toggle.id === 'report-split-sc' && window._reportData) renderReport();
+});
+
+// Re-render group comparison when grouping dropdown changes
+document.getElementById('analysis-grouping')?.addEventListener('change', () => {
+  const model = window._analysisModel;
+  if (!model) return;
+  const output = document.getElementById('report-output');
+  output.innerHTML = '';
+  renderGroupComparisonReport(output, model);
 });
 
 // Helper: read toggle state
@@ -3713,6 +3806,60 @@ document.addEventListener('click', (e) => {
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
       })();
       return;
+    case 'reportGroupComparison':
+    case 'reportBlooms':
+    case 'reportTopic':
+    case 'reportDifficulty':
+    case 'reportQuestionType':
+    case 'reportTiming':
+    case 'reportAutomark':
+      (async () => {
+        document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        log('Loading analysis data from Apollo cache…');
+        try {
+          const data = await loadAnalysisData();
+          if (!data) { log('Apollo cache not found — is the Cadmus page fully loaded?', 'err'); return; }
+          log(`Loaded: ${data.workOutcomes.length} students, ${data.questions.length} questions, ${data.accessCodes.length} access codes`, 'ok');
+          const model = buildAnalysisModel(data);
+
+          // Populate grouping dropdown
+          const groupSel = document.getElementById('analysis-grouping');
+          if (groupSel && model.groupings.length) {
+            const currentVal = groupSel.value;
+            groupSel.innerHTML = '';
+            model.groupings.forEach(g => {
+              const opt = document.createElement('option');
+              opt.value = g.id; opt.textContent = g.label;
+              groupSel.appendChild(opt);
+            });
+            // Restore previous selection if still valid, otherwise pick first
+            if (currentVal && model.groupings.some(g => g.id === currentVal)) {
+              groupSel.value = currentVal;
+            }
+          }
+
+          // Store model for re-use on grouping change
+          window._analysisModel = model;
+
+          const output = document.getElementById('report-output');
+          output.innerHTML = '';
+          const renderers = {
+            reportGroupComparison: renderGroupComparisonReport,
+            reportBlooms: renderBloomsReport,
+            reportTopic: renderTopicReport,
+            reportDifficulty: renderDifficultyReport,
+            reportQuestionType: renderQuestionTypeReport,
+            reportTiming: renderTimingReport,
+            reportAutomark: renderAutomarkReport,
+          };
+          renderers[action](output, model);
+        } catch (err) {
+          log(`Report failed: ${err.message}`, 'err');
+          console.error(err);
+        }
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      })();
+      return;
     case 'deleteSelected':
       if (!confirm('Delete all selected questions? This cannot be undone.')) return;
       break;
@@ -3726,6 +3873,7 @@ document.addEventListener('click', (e) => {
         const isAssessment = document.body.dataset.context === 'assessment';
 
         let data;
+        let assessmentName = '';
         if (isAssessment) {
           // Assessment edit page: extract from Apollo cache
           if (progress) { progress.style.display = 'block'; progress.textContent = 'Reading assessment data from cache\u2026'; }
@@ -3737,6 +3885,7 @@ document.addEventListener('click', (e) => {
             document.querySelectorAll('.btn').forEach(b => b.disabled = false);
             return;
           }
+          assessmentName = raw.assessmentName || '';
           data = {
             source: raw.source,
             totalQuestions: raw.questions.length,
@@ -3765,7 +3914,11 @@ document.addEventListener('click', (e) => {
 
         // Build filename
         const ts = new Date().toISOString().slice(0, 10);
-        const baseName = `cadmus_export_${ts}`;
+        const assessmentSlug = assessmentName
+          .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+        const baseName = assessmentSlug
+          ? `cadmus_${assessmentSlug}_${ts}`
+          : `cadmus_export_${ts}`;
 
         try {
           switch (fmt) {
@@ -4015,6 +4168,7 @@ async function scrapeGrades() {
 
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
+    world: 'MAIN',
     func: () => {
       const cache = window.__APOLLO_CLIENT__?.cache?.extract();
       if (!cache) return [];
@@ -4055,27 +4209,28 @@ async function scrapeGrades() {
 
 // Grade band definitions (Australian scale)
 const GRADE_BANDS = [
-  { label: 'HD',  name: 'High Distinction', min: 85, color: '#1565c0' },
-  { label: 'D',   name: 'Distinction',      min: 75, color: '#2e7d32' },
-  { label: 'CR',  name: 'Credit',           min: 65, color: '#f9a825' },
-  { label: 'P',   name: 'Pass',             min: 50, color: '#ef6c00' },
   { label: 'F',   name: 'Fail',             min: 0,  color: '#c62828' },
+  { label: 'P',   name: 'Pass',             min: 50, color: '#ef6c00' },
+  { label: 'CR',  name: 'Credit',           min: 65, color: '#f9a825' },
+  { label: 'D',   name: 'Distinction',      min: 75, color: '#2e7d32' },
+  { label: 'HD',  name: 'High Distinction', min: 85, color: '#1565c0' },
 ];
 
 function gradeFor(mark, maxMarks) {
   const pct = (mark / maxMarks) * 100;
-  for (const band of GRADE_BANDS) {
-    if (pct >= band.min) return band;
+  for (let i = GRADE_BANDS.length - 1; i >= 0; i--) {
+    if (pct >= GRADE_BANDS[i].min) return GRADE_BANDS[i];
   }
-  return GRADE_BANDS[GRADE_BANDS.length - 1];
+  return GRADE_BANDS[0];
 }
 
 function computeStats(marks) {
   if (!marks.length) return { mean: 0, median: 0, min: 0, max: 0, sorted: [] };
+  const r2 = v => parseFloat(v.toFixed(2));
   const sorted = [...marks].sort((a, b) => a - b);
-  const mean = (marks.reduce((s, v) => s + v, 0) / marks.length).toFixed(1);
-  const median = sorted[Math.floor(sorted.length / 2)];
-  return { mean, median, min: sorted[0], max: sorted[sorted.length - 1], sorted };
+  const mean = r2(marks.reduce((s, v) => s + v, 0) / marks.length);
+  const median = r2(sorted[Math.floor(sorted.length / 2)]);
+  return { mean, median, min: r2(sorted[0]), max: r2(sorted[sorted.length - 1]), sorted };
 }
 
 function lightenColor(hex, amount) {
@@ -4460,6 +4615,1001 @@ function renderGradeBreakdownChart(container, entries, maxMarks, splitSC) {
   container.appendChild(statsEl);
   container.appendChild(canvas);
   container.appendChild(legend);
+  addCopyButton(container, canvas);
+}
+
+// ── Analysis Reports: Data Layer ────────────────────────────────────────────
+
+async function loadAnalysisData() {
+  const tabId = cadmusTabId;
+  if (!tabId) return null;
+
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      const cache = window.__APOLLO_CLIENT__?.cache?.extract();
+      if (!cache) return null;
+
+      const byType = {};
+      Object.values(cache).forEach(v => {
+        if (!v?.__typename) return;
+        if (!byType[v.__typename]) byType[v.__typename] = [];
+        byType[v.__typename].push(v);
+      });
+
+      // Slim down to the fields we need
+      const slim = (arr, fields) => (arr || []).map(v => {
+        const o = {};
+        fields.forEach(f => { if (v[f] !== undefined) o[f] = v[f]; });
+        return o;
+      });
+
+      return {
+        users: slim(byType['User'], ['id', 'name', 'email']),
+        enrollments: (byType['Enrollment'] || []).map(e => ({
+          id: e.id, deleted: e.deleted, sisUserId: e.sisUserId,
+          userId: e.user?.__ref?.replace('User:', ''),
+          workId: e.work?.__ref?.replace('Work:', ''),
+          accessCodeId: e.accessCode?.__ref?.replace('AccessCode:', ''),
+          workSettingsRef: e.workSettings?.__ref?.replace('WorkSettings:', ''),
+          tags: e.tags || [],
+          verifiedCodes: e.verifiedCodes || [],
+        })),
+        accessCodes: slim(byType['AccessCode'], ['id', 'label', 'active']),
+        workOutcomes: (byType['WorkOutcome'] || []).map(wo => ({
+          id: wo.id, workId: wo.workId, maxScore: wo.maxScore,
+          score: wo.scoreBreakdown?.score,
+          automark: wo.scoreBreakdown?.automark,
+          marker: wo.scoreBreakdown?.marker,
+          markerModifier: wo.scoreBreakdown?.markerModifier,
+          moderatorModifier: wo.scoreBreakdown?.moderatorModifier,
+          questionOutcomeRefs: (wo.questionOutcomes || []).map(r => r.__ref?.replace('QuestionOutcome:', '')),
+        })),
+        questionOutcomes: (byType['QuestionOutcome'] || []).map(qo => ({
+          id: qo.id, questionId: qo.questionId,
+          score: qo.scoreBreakdown?.score,
+          automark: qo.scoreBreakdown?.automark,
+          markerModifier: qo.scoreBreakdown?.markerModifier,
+          maxScore: qo.maxScore,
+        })),
+        questions: (byType['Question'] || []).map(q => ({
+          id: q.id, questionType: q.questionType, difficulty: q.difficulty,
+          points: q.points,
+          tagRefs: (q.tags || []).map(t => t.__ref?.replace('QuestionTag:', '') || t),
+        })),
+        questionTags: slim(byType['QuestionTag'], ['id', 'name', 'label', 'value', 'tagType', 'type']),
+        works: slim(byType['Work'], ['id', 'startDate', 'lastSaveTime', 'attemptCount']),
+        submissions: slim(byType['Submission'], ['id', 'submittedAt', 'forceSubmitted', 'workId']),
+        workSettings: (byType['WorkSettings'] || []).map(ws => ({
+          id: ws.id, examDeferred: ws.examDeferred,
+          examStartDate: ws.examStartDate, examEndDate: ws.examEndDate,
+          examWritingTime: ws.examWritingTime,
+        })),
+        assessmentSettings: (byType['AssessmentSettings'] || []).map(as => ({
+          examWritingTime: as.examWritingTime, maxGrade: as.maxGrade,
+          weight: as.weight, assessmentType: as.assessmentType,
+          examStartDate: as.examStartDate, examEndDate: as.examEndDate,
+        })),
+      };
+    },
+  });
+  return result.result;
+}
+
+function buildAnalysisModel(raw) {
+  const userMap = {};
+  raw.users.forEach(u => { userMap[u.id] = u; });
+
+  const codeMap = {};
+  raw.accessCodes.forEach(c => { codeMap[c.id] = c; });
+
+  const workMap = {};
+  raw.works.forEach(w => { workMap[w.id] = w; });
+
+  const wsMap = {};
+  raw.workSettings.forEach(ws => { wsMap[ws.id] = ws; });
+
+  const submissionByWork = {};
+  raw.submissions.forEach(s => { if (s.workId) submissionByWork[s.workId] = s; });
+
+  const questionMap = {};
+  raw.questions.forEach(q => { questionMap[q.id] = q; });
+
+  const tagMap = {};
+  raw.questionTags.forEach(t => { tagMap[t.id] = t; });
+
+  const qoMap = {};
+  raw.questionOutcomes.forEach(qo => { qoMap[qo.id] = qo; });
+
+  // Build per-student records
+  const enrollByWork = {};
+  raw.enrollments.filter(e => !e.deleted).forEach(e => { enrollByWork[e.workId] = e; });
+
+  const maxScore = raw.workOutcomes[0]?.maxScore || raw.assessmentSettings[0]?.maxGrade || 40;
+  const examWritingTime = raw.assessmentSettings[0]?.examWritingTime || 50;
+
+  const students = raw.workOutcomes.map(wo => {
+    const enrol = enrollByWork[wo.workId] || {};
+    const user = userMap[enrol.userId] || {};
+    const work = workMap[wo.workId] || {};
+    const sub = submissionByWork[wo.workId];
+    const ws = wsMap[enrol.workSettingsRef];
+
+    // Resolve access code label: prefer verifiedCodes (reliable), fall back to accessCode ref
+    const verifiedLabel = enrol.verifiedCodes?.[0]?.label;
+    let accessCodeLabel = verifiedLabel || null;
+    if (!accessCodeLabel && enrol.accessCodeId) {
+      // Try direct match, then search by embedded code
+      const direct = codeMap[enrol.accessCodeId];
+      if (direct) { accessCodeLabel = direct.label; }
+      else {
+        const codeMatch = enrol.accessCodeId.match(/"code":"([^"]+)"/);
+        if (codeMatch) {
+          const found = raw.accessCodes.find(c => c.id?.includes(codeMatch[1]));
+          if (found) accessCodeLabel = found.label;
+        }
+      }
+    }
+
+    // Resolve enrollment tags as flat strings
+    const tagStrings = (enrol.tags || []).map(t => typeof t === 'string' ? t : t?.name || t?.label || JSON.stringify(t)).filter(Boolean);
+
+    return {
+      name: user.name || 'Unknown',
+      sisId: enrol.sisUserId || '',
+      score: wo.score ?? 0,
+      maxScore: wo.maxScore || maxScore,
+      automark: wo.automark ?? 0,
+      markerModifier: wo.markerModifier ?? 0,
+      moderatorModifier: wo.moderatorModifier ?? 0,
+      adj: (wo.markerModifier ?? 0) + (wo.moderatorModifier ?? 0),
+      accessCode: accessCodeLabel,
+      deferred: ws?.examDeferred || false,
+      deferredWritingTime: ws?.examWritingTime,
+      startDate: work.startDate ? new Date(work.startDate) : null,
+      submittedAt: sub?.submittedAt ? new Date(sub.submittedAt) : null,
+      forceSubmitted: sub?.forceSubmitted || false,
+      enrollmentTags: tagStrings,
+      questionOutcomeRefs: wo.questionOutcomeRefs || [],
+    };
+  });
+
+  // Auto-detect available grouping dimensions
+  const groupings = detectGroupings(students);
+
+  // Build per-question records with tags
+  const questions = raw.questions.filter(q => q.questionType !== 'OVERVIEW').map(q => {
+    const tags = (q.tagRefs || []).map(id => tagMap[id]).filter(Boolean);
+    const bloomTag = tags.find(t => /remember|understand|apply|analy[sz]e|evaluate|create/i.test(t.name || t.label || t.value || ''));
+    const weekTag = tags.find(t => /week|wk/i.test(t.name || t.label || t.value || ''));
+    const topicTags = tags.filter(t => t !== bloomTag && t !== weekTag);
+
+    return {
+      id: q.id,
+      type: q.questionType,
+      difficulty: q.difficulty,
+      points: q.points ?? 1,
+      bloom: bloomTag ? (bloomTag.name || bloomTag.label || bloomTag.value || '').toLowerCase() : null,
+      week: weekTag ? (weekTag.name || weekTag.label || weekTag.value || '') : null,
+      topics: topicTags.map(t => t.name || t.label || t.value || ''),
+    };
+  });
+
+  // Build question outcome lookup: questionId → [{score, maxScore, studentIdx}]
+  const qOutcomesByQuestion = {};
+  students.forEach((s, si) => {
+    s.questionOutcomeRefs.forEach(ref => {
+      const qo = qoMap[ref];
+      if (!qo) return;
+      if (!qOutcomesByQuestion[qo.questionId]) qOutcomesByQuestion[qo.questionId] = [];
+      qOutcomesByQuestion[qo.questionId].push({
+        score: qo.score ?? 0,
+        automark: qo.automark ?? 0,
+        markerModifier: qo.markerModifier ?? 0,
+        maxScore: qo.maxScore ?? questionMap[qo.questionId]?.points ?? 1,
+        studentIdx: si,
+      });
+    });
+  });
+
+  return {
+    students, questions, qOutcomesByQuestion, groupings,
+    maxScore, examWritingTime,
+    accessCodes: raw.accessCodes,
+    assessmentSettings: raw.assessmentSettings[0] || {},
+  };
+}
+
+// Auto-detect meaningful grouping dimensions from student data
+function detectGroupings(students) {
+  const dims = [];
+
+  // 1. Access codes
+  const codeCounts = {};
+  students.forEach(s => { const g = s.accessCode || null; codeCounts[g || '(none)'] = (codeCounts[g || '(none)'] || 0) + 1; });
+  const codeGroups = Object.keys(codeCounts).filter(k => k !== '(none)');
+  if (codeGroups.length >= 2) {
+    dims.push({
+      id: 'accessCode', label: `Access Code (${codeGroups.length} groups)`,
+      groupFn: s => s.accessCode || '(no code)',
+    });
+  }
+
+  // 2. Deferred status
+  const deferredCount = students.filter(s => s.deferred).length;
+  if (deferredCount > 0 && deferredCount < students.length) {
+    dims.push({
+      id: 'deferred', label: `Exam Sitting (${deferredCount} deferred)`,
+      groupFn: s => s.deferred ? 'Deferred' : 'Standard',
+    });
+  }
+
+  // 3. Enrollment tags — split each unique tag into a group
+  const allTags = new Set();
+  students.forEach(s => s.enrollmentTags.forEach(t => allTags.add(t)));
+  if (allTags.size >= 2) {
+    dims.push({
+      id: 'enrollmentTag', label: `Enrollment Tags (${allTags.size} tags)`,
+      groupFn: s => s.enrollmentTags.length ? s.enrollmentTags.join(', ') : '(untagged)',
+    });
+  }
+
+  // 4. Force-submitted vs normal
+  const forceCount = students.filter(s => s.forceSubmitted).length;
+  if (forceCount > 0 && forceCount < students.length) {
+    dims.push({
+      id: 'forceSubmitted', label: `Submission Type (${forceCount} forced)`,
+      groupFn: s => s.forceSubmitted ? 'Force-submitted' : 'Self-submitted',
+    });
+  }
+
+  // 5. Score quartile (always available as a fallback)
+  dims.push({
+    id: 'quartile', label: 'Score Quartile',
+    groupFn: s => {
+      const p = s.maxScore > 0 ? (s.score / s.maxScore) * 100 : 0;
+      if (p >= 75) return 'Q4 (75-100%)';
+      if (p >= 50) return 'Q3 (50-75%)';
+      if (p >= 25) return 'Q2 (25-50%)';
+      return 'Q1 (0-25%)';
+    },
+  });
+
+  return dims;
+}
+
+// ── Analysis Reports: Shared Helpers ────────────────────────────────────────
+
+function analysisStats(vals) {
+  if (!vals.length) return { n: 0, mean: 0, median: 0, sd: 0, min: 0, max: 0 };
+  const r2 = v => parseFloat(v.toFixed(2));
+  const sorted = [...vals].sort((a, b) => a - b);
+  const n = vals.length;
+  const mean = vals.reduce((s, v) => s + v, 0) / n;
+  const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+  return {
+    n, mean: r2(mean), median: r2(sorted[Math.floor(n / 2)]),
+    sd: r2(Math.sqrt(variance)), min: r2(sorted[0]), max: r2(sorted[n - 1]),
+  };
+}
+
+function makeTable(headers, rows, options = {}) {
+  const table = document.createElement('table');
+  table.className = 'analysis-table';
+  const thead = document.createElement('thead');
+  const hrow = document.createElement('tr');
+  headers.forEach(h => {
+    const th = document.createElement('th');
+    th.textContent = typeof h === 'object' ? h.label : h;
+    if ((typeof h === 'object' && h.num) || false) th.className = 'num';
+    hrow.appendChild(th);
+  });
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    row.forEach((cell, ci) => {
+      const td = document.createElement('td');
+      if (typeof cell === 'object' && cell.html) { td.innerHTML = cell.html; }
+      else { td.textContent = cell ?? ''; }
+      if (typeof headers[ci] === 'object' && headers[ci].num) td.className = 'num';
+      if (typeof cell === 'object' && cell.cls) td.className += ' ' + cell.cls;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  return table;
+}
+
+function makeTitle(text) {
+  const el = document.createElement('div');
+  el.style.cssText = 'font-size:15px;font-weight:700;margin-bottom:6px;color:#1a1a2e;';
+  el.textContent = text;
+  return el;
+}
+
+function makeSubtext(text) {
+  const el = document.createElement('div');
+  el.style.cssText = 'font-size:12px;color:#666;margin-bottom:10px;';
+  el.textContent = text;
+  return el;
+}
+
+function pct(val, max) { return max > 0 ? parseFloat(((val / max) * 100).toFixed(1)) : 0; }
+
+function drawGroupedBarChart(groups, series, options = {}) {
+  // groups: [{label}], series: [{name, color, values:[number]}]
+  const nGroups = groups.length;
+  const nSeries = series.length;
+  const groupW = Math.max(60, Math.min(100, Math.floor(650 / nGroups)));
+  const barW = Math.max(12, Math.floor((groupW - 10) / nSeries));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = nGroups * groupW + 60;
+  canvas.height = options.height || 240;
+  const ctx = canvas.getContext('2d');
+  const [padL, padT] = [40, 20];
+  const chartH = canvas.height - padT - 44;
+  const chartW = canvas.width - padL - 10;
+
+  const maxVal = Math.max(...series.flatMap(s => s.values), 1);
+
+  ctx.fillStyle = '#f8f9fb';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Grid
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + chartH - (i / 4) * chartH;
+    ctx.strokeStyle = '#dde'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
+    ctx.fillStyle = '#888'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText(Math.round((i / 4) * maxVal), padL - 4, y + 3);
+  }
+
+  groups.forEach((g, gi) => {
+    const gx = padL + gi * groupW;
+    series.forEach((s, si) => {
+      const val = s.values[gi] || 0;
+      const bh = (val / maxVal) * chartH;
+      const x = gx + 4 + si * barW;
+      const y = padT + chartH - bh;
+      ctx.fillStyle = s.color;
+      ctx.fillRect(x, y, barW - 2, bh);
+      if (val > 0) {
+        ctx.fillStyle = '#333'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(val, x + (barW - 2) / 2, y - 2);
+      }
+    });
+    // Group label
+    ctx.fillStyle = '#333'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+    const labelX = gx + groupW / 2;
+    ctx.fillText(g.label, labelX, padT + chartH + 14);
+    if (g.sub) {
+      ctx.fillStyle = '#888'; ctx.font = '9px sans-serif';
+      ctx.fillText(g.sub, labelX, padT + chartH + 26);
+    }
+  });
+
+  // Axes
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + chartH + 1); ctx.lineTo(padL + chartW, padT + chartH + 1); ctx.stroke();
+  if (options.yLabel) {
+    ctx.save(); ctx.fillStyle = '#555'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+    ctx.translate(10, padT + chartH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(options.yLabel, 0, 0); ctx.restore();
+  }
+
+  return canvas;
+}
+
+function makeChartLegend(items) {
+  const legend = document.createElement('div');
+  legend.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;margin-top:6px;font-size:11px;';
+  items.forEach(({ color, label }) => {
+    const span = document.createElement('span');
+    span.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:${color};vertical-align:-1px;margin-right:4px"></span>${label}`;
+    legend.appendChild(span);
+  });
+  return legend;
+}
+
+// ── Analysis Report 1: Tute Group Comparison ────────────────────────────────
+
+function renderGroupComparisonReport(container, model) {
+  // Get selected grouping dimension
+  const groupSel = document.getElementById('analysis-grouping');
+  const dimId = groupSel?.value || (model.groupings[0]?.id);
+  const dim = model.groupings.find(g => g.id === dimId);
+
+  if (!dim) {
+    container.appendChild(makeSubtext('No grouping dimensions detected in the data.'));
+    return;
+  }
+
+  // Group students by the selected dimension
+  const groups = {};
+  model.students.forEach(s => {
+    const g = dim.groupFn(s);
+    if (!groups[g]) groups[g] = [];
+    groups[g].push(s);
+  });
+
+  const cohortStats = analysisStats(model.students.map(s => pct(s.score, s.maxScore)));
+  const groupNames = Object.keys(groups).sort((a, b) => {
+    // Push catch-all labels to end
+    const catchAll = /^\(|^unknown/i;
+    if (catchAll.test(a) && !catchAll.test(b)) return 1;
+    if (!catchAll.test(a) && catchAll.test(b)) return -1;
+    return a.localeCompare(b);
+  });
+
+  container.appendChild(makeTitle(`Group Comparison: ${dim.label} — ${model.students.length} students`));
+  container.appendChild(makeSubtext(`Cohort mean: ${cohortStats.mean}% | Median: ${cohortStats.median}% | SD: ${cohortStats.sd}%`));
+
+  // Summary table
+  const tableRows = groupNames.map(name => {
+    const pcts = groups[name].map(s => pct(s.score, s.maxScore));
+    const gs = analysisStats(pcts);
+    const dev = Math.abs(gs.mean - cohortStats.mean);
+    const flag = dev > cohortStats.sd;
+    return [
+      name,
+      { html: `${gs.n}`, cls: 'num' },
+      { html: `${gs.mean}%${flag ? ' <span class="analysis-flag">*</span>' : ''}`, cls: 'num' },
+      { html: `${gs.median}%`, cls: 'num' },
+      { html: `${gs.sd}%`, cls: 'num' },
+      { html: `${gs.min}%`, cls: 'num' },
+      { html: `${gs.max}%`, cls: 'num' },
+    ];
+  });
+  container.appendChild(makeTable(
+    ['Group', { label: 'n', num: true }, { label: 'Mean', num: true }, { label: 'Median', num: true },
+     { label: 'SD', num: true }, { label: 'Min', num: true }, { label: 'Max', num: true }],
+    tableRows
+  ));
+
+  const note = document.createElement('div');
+  note.style.cssText = 'font-size:10px;color:#999;margin-bottom:10px;';
+  note.textContent = '* Mean deviates more than 1 SD from cohort mean';
+  container.appendChild(note);
+
+  // Grade band chart per group
+  const colors = ['#1565c0', '#2e7d32', '#f9a825', '#ef6c00', '#c62828', '#7b1fa2', '#00838f', '#4e342e'];
+  const seriesData = groupNames.map(name => {
+    const bandCounts = GRADE_BANDS.map(() => 0);
+    groups[name].forEach(s => {
+      const band = gradeFor(s.score, s.maxScore);
+      const idx = GRADE_BANDS.findIndex(b => b.label === band.label);
+      if (idx >= 0) bandCounts[idx]++;
+    });
+    return bandCounts;
+  });
+
+  const series = groupNames.map((name, i) => ({
+    name: `${name} (n=${groups[name].length})`,
+    color: colors[i % colors.length],
+    values: GRADE_BANDS.map((_, bi) => seriesData[i][bi]),
+  }));
+
+  const bandGroups = GRADE_BANDS.map(b => ({ label: b.label, sub: `${b.min}%+` }));
+  const canvas = drawGroupedBarChart(bandGroups, series, { yLabel: '# Students' });
+  container.appendChild(canvas);
+  container.appendChild(makeChartLegend(series.map(s => ({ color: s.color, label: s.name }))));
+  addCopyButton(container, canvas);
+}
+
+// ── Analysis Report 3: Cognitive Complexity ──────────────────────────────────
+
+function renderBloomsReport(container, model) {
+  const bloomLevels = ['remember', 'understand', 'apply', 'analyze', 'evaluate', 'create'];
+  const bloomData = {};
+
+  model.questions.forEach(q => {
+    if (!q.bloom) return;
+    const level = bloomLevels.find(l => q.bloom.startsWith(l)) || q.bloom;
+    if (!bloomData[level]) bloomData[level] = { questions: [], totalPoints: 0, outcomes: [] };
+    bloomData[level].questions.push(q);
+    bloomData[level].totalPoints += q.points;
+    const outcomes = model.qOutcomesByQuestion[q.id] || [];
+    outcomes.forEach(o => {
+      bloomData[level].outcomes.push({ pct: pct(o.score, o.maxScore) });
+    });
+  });
+
+  const levels = bloomLevels.filter(l => bloomData[l]);
+  const untagged = model.questions.filter(q => !q.bloom);
+
+  container.appendChild(makeTitle(`Cognitive Complexity — ${levels.length} levels`));
+  if (untagged.length) {
+    container.appendChild(makeSubtext(`${untagged.length} questions without cognitive complexity tags excluded`));
+  }
+
+  // Heatmap table
+  const tableRows = levels.map(level => {
+    const d = bloomData[level];
+    const pcts = d.outcomes.map(o => o.pct);
+    const stats = analysisStats(pcts);
+    const meanPct = stats.mean;
+    const bg = meanPct >= 70 ? '#c8e6c9' : meanPct >= 50 ? '#fff9c4' : '#ffcdd2';
+    return [
+      level.charAt(0).toUpperCase() + level.slice(1),
+      { html: `${d.questions.length}`, cls: 'num' },
+      { html: `${d.totalPoints}`, cls: 'num' },
+      { html: `${d.outcomes.length}`, cls: 'num' },
+      { html: `<span style="background:${bg};padding:2px 6px;border-radius:3px;font-weight:600">${meanPct}%</span>`, cls: 'num' },
+      { html: `${stats.median}%`, cls: 'num' },
+      { html: `${stats.sd}%`, cls: 'num' },
+    ];
+  });
+
+  container.appendChild(makeTable(
+    ['Cognitive Level', { label: 'Questions', num: true }, { label: 'Points', num: true },
+     { label: 'Responses', num: true }, { label: 'Mean %', num: true },
+     { label: 'Median %', num: true }, { label: 'SD', num: true }],
+    tableRows
+  ));
+
+  // Bar chart
+  const series = [{
+    name: 'Mean % Correct',
+    color: '#1976d2',
+    values: levels.map(l => bloomData[l] ? analysisStats(bloomData[l].outcomes.map(o => o.pct)).mean : 0),
+  }];
+  const groups = levels.map(l => ({ label: l.charAt(0).toUpperCase() + l.slice(1) }));
+  const canvas = drawGroupedBarChart(groups, series, { yLabel: 'Mean % Correct', height: 200 });
+  container.appendChild(canvas);
+  addCopyButton(container, canvas);
+}
+
+// ── Analysis Report 4: Topic / Week Performance ─────────────────────────────
+
+function renderTopicReport(container, model) {
+  const weekData = {};
+
+  model.questions.forEach(q => {
+    const label = q.week || '(untagged)';
+    if (!weekData[label]) weekData[label] = { questions: [], totalPoints: 0, outcomes: [] };
+    weekData[label].questions.push(q);
+    weekData[label].totalPoints += q.points;
+    const outcomes = model.qOutcomesByQuestion[q.id] || [];
+    outcomes.forEach(o => {
+      weekData[label].outcomes.push({ pct: pct(o.score, o.maxScore) });
+    });
+  });
+
+  const weeks = Object.keys(weekData).sort((a, b) => {
+    const na = parseInt(a.replace(/\D/g, '')) || 999;
+    const nb = parseInt(b.replace(/\D/g, '')) || 999;
+    return na - nb;
+  });
+
+  container.appendChild(makeTitle(`Topic / Week Performance — ${weeks.length} topics`));
+
+  const tableRows = weeks.map(w => {
+    const d = weekData[w];
+    const pcts = d.outcomes.map(o => o.pct);
+    const stats = analysisStats(pcts);
+    const types = [...new Set(d.questions.map(q => q.type))].join(', ');
+    return [
+      w,
+      { html: `${d.questions.length}`, cls: 'num' },
+      { html: `${d.totalPoints}`, cls: 'num' },
+      types,
+      { html: `${stats.mean}%`, cls: 'num' },
+      { html: `${stats.median}%`, cls: 'num' },
+      { html: `${stats.sd}%`, cls: 'num' },
+    ];
+  });
+
+  container.appendChild(makeTable(
+    ['Week / Topic', { label: 'Questions', num: true }, { label: 'Points', num: true },
+     'Types', { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true }],
+    tableRows
+  ));
+
+  // Bar chart
+  const series = [{
+    name: 'Mean % Correct', color: '#1976d2',
+    values: weeks.map(w => analysisStats(weekData[w].outcomes.map(o => o.pct)).mean),
+  }];
+  const groups = weeks.map(w => ({ label: w }));
+  const canvas = drawGroupedBarChart(groups, series, { yLabel: 'Mean % Correct', height: 200 });
+  container.appendChild(canvas);
+  addCopyButton(container, canvas);
+}
+
+// ── Analysis Report 5: Difficulty Analysis ──────────────────────────────────
+
+function renderDifficultyReport(container, model) {
+  const diffLevels = ['EASY', 'MEDIUM', 'HARD'];
+  const diffData = {};
+
+  model.questions.forEach(q => {
+    const d = q.difficulty || '(untagged)';
+    if (!diffData[d]) diffData[d] = { questions: [], outcomes: [] };
+    diffData[d].questions.push(q);
+    const outcomes = model.qOutcomesByQuestion[q.id] || [];
+    outcomes.forEach(o => {
+      diffData[d].outcomes.push({ pct: pct(o.score, o.maxScore), qType: q.type });
+    });
+  });
+
+  const levels = [...diffLevels.filter(l => diffData[l]), ...Object.keys(diffData).filter(l => !diffLevels.includes(l))];
+
+  container.appendChild(makeTitle(`Difficulty Analysis — Tagged vs Actual Performance`));
+
+  const tableRows = levels.map(level => {
+    const d = diffData[level];
+    const pcts = d.outcomes.map(o => o.pct);
+    const stats = analysisStats(pcts);
+    // Flag mismatches
+    let mismatch = '';
+    if (level === 'EASY' && stats.mean < 60) mismatch = 'Tagged EASY but mean <60%';
+    else if (level === 'HARD' && stats.mean > 80) mismatch = 'Tagged HARD but mean >80%';
+    else if (level === 'MEDIUM' && (stats.mean < 40 || stats.mean > 90)) mismatch = 'Unexpected range for MEDIUM';
+    return [
+      level,
+      { html: `${d.questions.length}`, cls: 'num' },
+      { html: `${d.outcomes.length}`, cls: 'num' },
+      { html: `${stats.mean}%`, cls: 'num' },
+      { html: `${stats.median}%`, cls: 'num' },
+      { html: `${stats.sd}%`, cls: 'num' },
+      mismatch ? { html: `<span class="analysis-flag">${mismatch}</span>` } : { html: '<span class="analysis-ok">OK</span>' },
+    ];
+  });
+
+  container.appendChild(makeTable(
+    ['Tagged Difficulty', { label: 'Questions', num: true }, { label: 'Responses', num: true },
+     { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true }, 'Validation'],
+    tableRows
+  ));
+
+  // Chart: grouped bars by difficulty level
+  const series = [{
+    name: 'Mean % Correct', color: '#1976d2',
+    values: levels.map(l => analysisStats(diffData[l].outcomes.map(o => o.pct)).mean),
+  }];
+  const groups = levels.map(l => ({ label: l }));
+  const canvas = drawGroupedBarChart(groups, series, { yLabel: 'Mean % Correct', height: 200 });
+  container.appendChild(canvas);
+
+  // Expected difficulty line annotations
+  const ctx = canvas.getContext('2d');
+  const padL = 40, padT = 20, chartH = canvas.height - padT - 44;
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = '#d32f2f'; ctx.lineWidth = 1;
+  [80, 60, 40].forEach((threshold, i) => {
+    if (i < levels.length) {
+      const y = padT + chartH - (threshold / 100) * chartH;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(canvas.width - 10, y); ctx.stroke();
+      ctx.fillStyle = '#d32f2f'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
+      ctx.fillText(`${threshold}%`, canvas.width - 12, y - 2);
+    }
+  });
+  ctx.setLineDash([]);
+
+  addCopyButton(container, canvas);
+}
+
+// ── Analysis Report 6: Question Type Breakdown ──────────────────────────────
+
+function renderQuestionTypeReport(container, model) {
+  const typeData = {};
+
+  model.questions.forEach(q => {
+    const t = q.type || 'UNKNOWN';
+    if (!typeData[t]) typeData[t] = { questions: [], totalPoints: 0, outcomes: [] };
+    typeData[t].questions.push(q);
+    typeData[t].totalPoints += q.points;
+    const outcomes = model.qOutcomesByQuestion[q.id] || [];
+    outcomes.forEach(o => {
+      typeData[t].outcomes.push({ pct: pct(o.score, o.maxScore), automark: o.automark, markerMod: o.markerModifier });
+    });
+  });
+
+  const types = Object.keys(typeData).sort();
+  const totalPoints = types.reduce((s, t) => s + typeData[t].totalPoints, 0);
+
+  container.appendChild(makeTitle(`Question Type Breakdown — ${model.questions.length} questions`));
+
+  const tableRows = types.map(type => {
+    const d = typeData[type];
+    const pcts = d.outcomes.map(o => o.pct);
+    const stats = analysisStats(pcts);
+    const weight = totalPoints > 0 ? parseFloat(((d.totalPoints / totalPoints) * 100).toFixed(1)) : 0;
+    return [
+      type,
+      { html: `${d.questions.length}`, cls: 'num' },
+      { html: `${d.totalPoints}`, cls: 'num' },
+      { html: `${weight}%`, cls: 'num' },
+      { html: `${stats.mean}%`, cls: 'num' },
+      { html: `${stats.median}%`, cls: 'num' },
+      { html: `${stats.sd}%`, cls: 'num' },
+    ];
+  });
+
+  container.appendChild(makeTable(
+    ['Type', { label: 'Questions', num: true }, { label: 'Total Pts', num: true },
+     { label: 'Weight', num: true }, { label: 'Mean %', num: true },
+     { label: 'Median %', num: true }, { label: 'SD', num: true }],
+    tableRows
+  ));
+
+  // Chart
+  const colors = { MCQ: '#1976d2', BLANKS: '#2e7d32', SHORT: '#ef6c00', MATCHING: '#7b1fa2' };
+  const series = [{
+    name: 'Mean % Correct', color: '#1976d2',
+    values: types.map(t => analysisStats(typeData[t].outcomes.map(o => o.pct)).mean),
+  }];
+  const groups = types.map(t => ({ label: t, sub: `${typeData[t].questions.length}q / ${typeData[t].totalPoints}pts` }));
+  const canvas = drawGroupedBarChart(groups, series, { yLabel: 'Mean % Correct', height: 200 });
+  container.appendChild(canvas);
+  addCopyButton(container, canvas);
+}
+
+// ── Analysis Report 7: Exam Timing ──────────────────────────────────────────
+
+function renderTimingReport(container, model) {
+  const timings = [];
+  model.students.forEach(s => {
+    if (!s.startDate || !s.submittedAt) return;
+    const durationMin = (s.submittedAt - s.startDate) / 60000;
+    if (durationMin > 0 && durationMin < 600) { // sanity cap at 10h
+      timings.push({
+        name: s.name, duration: parseFloat(durationMin.toFixed(1)),
+        forceSubmitted: s.forceSubmitted, deferred: s.deferred,
+        score: s.score, maxScore: s.maxScore,
+      });
+    }
+  });
+
+  container.appendChild(makeTitle(`Exam Timing Profile — ${timings.length} submissions`));
+
+  if (!timings.length) {
+    container.appendChild(makeSubtext('No timing data available (startDate/submittedAt not found).'));
+    return;
+  }
+
+  const durations = timings.map(t => t.duration);
+  const stats = analysisStats(durations);
+  const forceCount = timings.filter(t => t.forceSubmitted).length;
+  const fastCount = timings.filter(t => t.duration < model.examWritingTime * 0.5).length;
+
+  container.appendChild(makeSubtext(
+    `Writing time: ${model.examWritingTime} min | Mean duration: ${stats.mean} min | Median: ${stats.median} min | ` +
+    `Force-submitted: ${forceCount} | <50% time used: ${fastCount}`
+  ));
+
+  // Histogram: bucket by 5-min intervals
+  const bucketSize = 5;
+  const maxDur = Math.ceil(stats.max / bucketSize) * bucketSize;
+  const buckets = {};
+  for (let i = 0; i <= maxDur; i += bucketSize) buckets[i] = { all: 0, forced: 0 };
+  timings.forEach(t => {
+    const bin = Math.floor(t.duration / bucketSize) * bucketSize;
+    const key = Math.min(bin, maxDur);
+    buckets[key].all++;
+    if (t.forceSubmitted) buckets[key].forced++;
+  });
+
+  const labels = Object.keys(buckets).map(Number).sort((a, b) => a - b);
+  const maxCount = Math.max(...labels.map(k => buckets[k].all), 1);
+
+  const canvas = document.createElement('canvas');
+  const slotW = Math.max(24, Math.min(40, Math.floor(600 / labels.length)));
+  canvas.width = labels.length * slotW + 60;
+  canvas.height = 240;
+  const ctx = canvas.getContext('2d');
+  const [padL, padB, padT] = [40, 44, 20];
+  const chartW = canvas.width - padL - 10;
+  const chartH = canvas.height - padB - padT;
+
+  ctx.fillStyle = '#f8f9fb';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + chartH - (i / 4) * chartH;
+    ctx.strokeStyle = '#dde'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
+    ctx.fillStyle = '#888'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText(Math.round((i / 4) * maxCount), padL - 4, y + 3);
+  }
+
+  // Writing time reference line
+  const wtBin = labels.findIndex(l => l >= model.examWritingTime);
+  if (wtBin >= 0) {
+    const x = padL + wtBin * slotW;
+    ctx.strokeStyle = '#d32f2f'; ctx.lineWidth = 2; ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + chartH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#d32f2f'; ctx.font = '9px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText(`${model.examWritingTime}m limit`, x + 3, padT + 10);
+  }
+
+  labels.forEach((label, i) => {
+    const x = padL + i * slotW;
+    const b = buckets[label];
+    const regCount = b.all - b.forced;
+
+    // Regular (blue)
+    if (regCount > 0) {
+      const bh = (regCount / maxCount) * chartH;
+      ctx.fillStyle = '#1976d2';
+      ctx.fillRect(x + 2, padT + chartH - bh, slotW - 4, bh);
+    }
+    // Forced (orange stacked on top)
+    if (b.forced > 0) {
+      const regH = (regCount / maxCount) * chartH;
+      const forceH = (b.forced / maxCount) * chartH;
+      ctx.fillStyle = '#ef6c00';
+      ctx.fillRect(x + 2, padT + chartH - regH - forceH, slotW - 4, forceH);
+    }
+    // Count label
+    if (b.all > 0) {
+      const totalH = (b.all / maxCount) * chartH;
+      ctx.fillStyle = '#333'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(b.all, x + slotW / 2, padT + chartH - totalH - 2);
+    }
+
+    ctx.fillStyle = '#555'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(`${label}`, x + slotW / 2, padT + chartH + 13);
+  });
+
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + chartH + 1); ctx.lineTo(padL + chartW, padT + chartH + 1); ctx.stroke();
+  ctx.fillStyle = '#555'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('Duration (minutes)', padL + chartW / 2, canvas.height - 2);
+  ctx.save(); ctx.translate(10, padT + chartH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('# Students', 0, 0); ctx.restore();
+
+  container.appendChild(canvas);
+  container.appendChild(makeChartLegend([
+    { color: '#1976d2', label: 'Submitted' },
+    { color: '#ef6c00', label: 'Force-submitted' },
+    { color: '#d32f2f', label: 'Writing time limit' },
+  ]));
+  addCopyButton(container, canvas);
+
+  // Flag table: unusual timings
+  const flags = [];
+  timings.filter(t => t.forceSubmitted).forEach(t => flags.push([t.name, `${t.duration} min`, 'Force-submitted', `${pct(t.score, t.maxScore)}%`]));
+  timings.filter(t => !t.forceSubmitted && t.duration < model.examWritingTime * 0.5).forEach(t => flags.push([t.name, `${t.duration} min`, '<50% time used', `${pct(t.score, t.maxScore)}%`]));
+
+  if (flags.length) {
+    const flagTitle = document.createElement('div');
+    flagTitle.style.cssText = 'font-size:13px;font-weight:600;margin-top:12px;color:#d32f2f;';
+    flagTitle.textContent = `Flagged Submissions (${flags.length})`;
+    container.appendChild(flagTitle);
+    container.appendChild(makeTable(['Student', 'Duration', 'Flag', 'Score %'], flags));
+  }
+}
+
+// ── Analysis Report 8: Automark Analysis ────────────────────────────────────
+
+function renderAutomarkReport(container, model) {
+  const adjVals = model.students.map(s => s.markerModifier);
+  const modVals = model.students.map(s => s.moderatorModifier);
+  const adjStats = analysisStats(adjVals);
+  const hasModeration = modVals.some(v => v !== 0);
+
+  container.appendChild(makeTitle(`Automark vs Human Adjustment — ${model.students.length} students`));
+  container.appendChild(makeSubtext(
+    `Marker adjustment: mean ${adjStats.mean}, range [${adjStats.min}, ${adjStats.max}]` +
+    (hasModeration ? ` | Moderator adjustments also present` : '')
+  ));
+
+  // Per question-type breakdown of adjustments
+  const typeAdj = {};
+  model.questions.forEach(q => {
+    const t = q.type || 'UNKNOWN';
+    if (!typeAdj[t]) typeAdj[t] = { automarks: [], markerMods: [], totalPts: 0 };
+    typeAdj[t].totalPts += q.points;
+    const outcomes = model.qOutcomesByQuestion[q.id] || [];
+    outcomes.forEach(o => {
+      typeAdj[t].automarks.push(o.automark);
+      typeAdj[t].markerMods.push(o.markerModifier);
+    });
+  });
+
+  const types = Object.keys(typeAdj).sort();
+  const tableRows = types.map(type => {
+    const d = typeAdj[type];
+    const autoStats = analysisStats(d.automarks);
+    const modStats = analysisStats(d.markerMods);
+    const direction = modStats.mean > 0.05 ? 'Markers add' : modStats.mean < -0.05 ? 'Markers reduce' : 'Neutral';
+    const dirCls = modStats.mean > 0.05 ? 'analysis-ok' : modStats.mean < -0.05 ? 'analysis-flag' : '';
+    return [
+      type,
+      { html: `${d.automarks.length}`, cls: 'num' },
+      { html: `${autoStats.mean}`, cls: 'num' },
+      { html: `${modStats.mean}`, cls: 'num' },
+      { html: `${modStats.sd}`, cls: 'num' },
+      { html: `[${modStats.min}, ${modStats.max}]`, cls: 'num' },
+      { html: `<span class="${dirCls}">${direction}</span>` },
+    ];
+  });
+
+  container.appendChild(makeTable(
+    ['Type', { label: 'Responses', num: true }, { label: 'Automark Mean', num: true },
+     { label: 'Adj Mean', num: true }, { label: 'Adj SD', num: true },
+     { label: 'Adj Range', num: true }, 'Direction'],
+    tableRows
+  ));
+
+  // Student-level adjustment distribution histogram
+  const adjBucketSize = 0.5;
+  const minAdj = Math.floor(adjStats.min / adjBucketSize) * adjBucketSize;
+  const maxAdj = Math.ceil(adjStats.max / adjBucketSize) * adjBucketSize;
+  const buckets = {};
+  for (let v = minAdj; v <= maxAdj; v = parseFloat((v + adjBucketSize).toFixed(1))) buckets[v] = 0;
+  model.students.forEach(s => {
+    const bin = parseFloat((Math.round(s.markerModifier / adjBucketSize) * adjBucketSize).toFixed(1));
+    const key = Math.max(minAdj, Math.min(maxAdj, bin));
+    buckets[key] = (buckets[key] || 0) + 1;
+  });
+
+  const labels = Object.keys(buckets).map(Number).sort((a, b) => a - b);
+  const maxCount = Math.max(...labels.map(k => buckets[k]), 1);
+
+  const canvas = document.createElement('canvas');
+  const slotW = Math.max(20, Math.min(36, Math.floor(600 / labels.length)));
+  canvas.width = labels.length * slotW + 60;
+  canvas.height = 220;
+  const ctx = canvas.getContext('2d');
+  const [padL, padB, padT] = [40, 36, 20];
+  const chartW = canvas.width - padL - 10;
+  const chartH = canvas.height - padB - padT;
+
+  ctx.fillStyle = '#f8f9fb';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + chartH - (i / 4) * chartH;
+    ctx.strokeStyle = '#dde'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
+    ctx.fillStyle = '#888'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText(Math.round((i / 4) * maxCount), padL - 4, y + 3);
+  }
+
+  // Zero line
+  const zeroIdx = labels.indexOf(0);
+  if (zeroIdx >= 0) {
+    const x = padL + zeroIdx * slotW + slotW / 2;
+    ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + chartH); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  labels.forEach((label, i) => {
+    const x = padL + i * slotW;
+    const count = buckets[label];
+    if (count > 0) {
+      const bh = (count / maxCount) * chartH;
+      ctx.fillStyle = label < 0 ? '#ef6c00' : label > 0 ? '#1976d2' : '#78909c';
+      ctx.fillRect(x + 2, padT + chartH - bh, slotW - 4, bh);
+      ctx.fillStyle = '#333'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(count, x + slotW / 2, padT + chartH - bh - 2);
+    }
+    if (label === 0 || label === minAdj || label === maxAdj || label % 2 === 0) {
+      ctx.fillStyle = '#555'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(label, x + slotW / 2, padT + chartH + 13);
+    }
+  });
+
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + chartH + 1); ctx.lineTo(padL + chartW, padT + chartH + 1); ctx.stroke();
+  ctx.fillStyle = '#555'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('Marker Adjustment (points)', padL + chartW / 2, canvas.height - 2);
+  ctx.save(); ctx.translate(10, padT + chartH / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('# Students', 0, 0); ctx.restore();
+
+  container.appendChild(canvas);
+  container.appendChild(makeChartLegend([
+    { color: '#ef6c00', label: 'Negative adj' },
+    { color: '#78909c', label: 'No change' },
+    { color: '#1976d2', label: 'Positive adj' },
+  ]));
   addCopyButton(container, canvas);
 }
 

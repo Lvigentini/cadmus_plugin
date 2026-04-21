@@ -518,6 +518,46 @@ label input[type="number"] {
   margin-top: 6px;
 }
 .btn--grading-secondary:hover { background: #455a64; }
+
+/* Analysis reports */
+.card--analysis { border-color: #bbdefb; }
+.analysis-section-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1565c0;
+  margin: 0 0 4px;
+}
+.btn--analysis {
+  background: #1976d2;
+  color: #fff;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+.btn--analysis:hover { background: #1565c0; }
+.analysis-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin: 8px 0;
+}
+.analysis-table th {
+  text-align: left;
+  background: #e3f2fd;
+  color: #1565c0;
+  padding: 5px 8px;
+  font-weight: 600;
+  border-bottom: 2px solid #bbdefb;
+  white-space: nowrap;
+}
+.analysis-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #eee;
+  vertical-align: middle;
+}
+.analysis-table tr:hover td { background: #f5f9ff; }
+.analysis-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.analysis-flag { color: #d32f2f; font-weight: 600; }
+.analysis-ok { color: #2e7d32; }
 .grading-mapping-table {
   width: 100%;
   border-collapse: collapse;

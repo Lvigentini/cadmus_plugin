@@ -275,10 +275,12 @@
 
     <!-- ═══ REPORT TAB ═══ -->
     <div class="tab-panel" data-panel="report">
-      <div class="tab-help">Quick visual reports from the Cadmus grading view. Open a Cadmus assessment with visible marks, then click a chart type below.</div>
+      <div class="tab-help">Visual reports from the Cadmus Apollo cache. Works on Marking, Moderation, and Learning Assurance pages.</div>
 
-      <div class="card">
+      <!-- Score Distribution -->
+      <div class="card card--analysis">
         <div class="card-body" style="padding-top:14px">
+          <p class="analysis-section-label">Score Distribution</p>
           <label>Max marks <input type="number" id="report-max" value="50" min="1" step="1" style="width:70px"></label>
           <label class="toggle-label" style="margin-top:8px">
             <span>Split by Special Consideration</span>
@@ -287,8 +289,51 @@
             </button>
           </label>
           <div style="display:flex;gap:8px;margin-top:10px">
-            <button class="btn" data-action="chartDistribution">Mark Distribution</button>
-            <button class="btn" data-action="chartGrades">Grade Breakdown</button>
+            <button class="btn btn--analysis" data-action="chartDistribution">Mark Distribution</button>
+            <button class="btn btn--analysis" data-action="chartGrades">Grade Breakdown</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Moderation Reports -->
+      <div class="card card--analysis">
+        <div class="card-body" style="padding-top:14px">
+          <p class="analysis-section-label">Group Comparison</p>
+          <p class="fix-hint">Compare performance across student groups. Grouping dimensions are auto-detected from the Apollo cache.</p>
+          <label style="margin-top:6px;display:block">
+            Group by
+            <select id="analysis-grouping" style="width:100%;margin-top:4px;padding:5px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px">
+              <option value="">(click a report to detect groupings)</option>
+            </select>
+          </label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn btn--analysis" data-action="reportGroupComparison">Group Comparison</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Learning Assurance Reports -->
+      <div class="card card--analysis">
+        <div class="card-body" style="padding-top:14px">
+          <p class="analysis-section-label">Learning Assurance</p>
+          <p class="fix-hint">Analyse question quality, cognitive level alignment, and topic performance.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn btn--analysis" data-action="reportBlooms">Cognitive Complexity</button>
+            <button class="btn btn--analysis" data-action="reportTopic">Topic / Week</button>
+            <button class="btn btn--analysis" data-action="reportDifficulty">Difficulty Analysis</button>
+            <button class="btn btn--analysis" data-action="reportQuestionType">Question Type</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Exam Integrity & Marking Quality -->
+      <div class="card card--analysis">
+        <div class="card-body" style="padding-top:14px">
+          <p class="analysis-section-label">Exam Integrity &amp; Marking Quality</p>
+          <p class="fix-hint">Timing profiles, submission patterns, and automark-vs-human analysis.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn btn--analysis" data-action="reportTiming">Exam Timing</button>
+            <button class="btn btn--analysis" data-action="reportAutomark">Automark Analysis</button>
           </div>
         </div>
       </div>
