@@ -6,7 +6,12 @@
   "author": "Lorenzo Vigentini <lorenzo@cogentixai.com>",
   "homepage_url": "https://github.com/Lvigentini/cadmus_plugin",
   "permissions": ["activeTab", "scripting", "tabs", "storage"],
-  "host_permissions": ["https://*.cadmus.io/*", "https://api.anthropic.com/*"],
+  "host_permissions": [
+    "https://*.cadmus.io/*",
+    "https://claude.ai/*",
+    "https://chatgpt.com/*",
+    "https://gemini.google.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },

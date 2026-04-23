@@ -3512,22 +3512,20 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelector(`[data-panel="${t.dataset.tab}"]`).classList.add('active');
 }));
 
-// ── Anthropic API key management ─────────────────────────────────────────────
-chrome.storage.local.get(['anthropicApiKey'], ({ anthropicApiKey }) => {
-  const status = document.getElementById('grading-api-key-status');
-  if (status) status.textContent = anthropicApiKey ? 'Key saved ✓' : 'No key saved';
-});
-
-document.getElementById('btn-save-api-key')?.addEventListener('click', () => {
-  const key = (document.getElementById('grading-api-key')?.value || '').trim();
-  if (!key.startsWith('sk-ant-')) { alert('Enter a valid Anthropic API key (starts with sk-ant-)'); return; }
-  chrome.storage.local.set({ anthropicApiKey: key }, () => {
-    const status = document.getElementById('grading-api-key-status');
-    if (status) status.textContent = 'Key saved ✓';
-    const inp = document.getElementById('grading-api-key');
-    if (inp) inp.value = '';
-  });
-});
+// ── LLM session detection ─────────────────────────────────────────────────────
+(async () => {
+  const statusEl = document.getElementById('grading-ai-status');
+  if (!statusEl) return;
+  const session = await detectLLMSession();
+  if (session) {
+    statusEl.textContent = `Session detected: ${session.label}`;
+    statusEl.style.color = '#2e7d32';
+    window.__llmSession = session;
+  } else {
+    statusEl.textContent = 'No session found — log in to Claude.ai, ChatGPT, or Gemini in this browser.';
+    statusEl.style.color = '#c62828';
+  }
+})();
 
 // ── File input handler ───────────────────────────────────────────────────────
 document.getElementById('import-file')?.addEventListener('change', (e) => {
@@ -3654,6 +3652,118 @@ document.getElementById('analysis-grouping')?.addEventListener('change', () => {
 
 // Helper: read toggle state
 const isToggleOn = (id) => document.getElementById(id)?.classList.contains('active') ?? false;
+
+// ── LLM session helpers ───────────────────────────────────────────────────────
+
+async function detectLLMSession() {
+  // 1. Claude.ai
+  try {
+    const r = await fetch('https://claude.ai/api/organizations', { credentials: 'include' });
+    if (r.ok) {
+      const orgs = await r.json();
+      const orgId = Array.isArray(orgs) ? orgs[0]?.uuid : orgs?.uuid;
+      if (orgId) return { service: 'claude', label: 'Claude.ai', orgId };
+    }
+  } catch (_) {}
+
+  // 2. ChatGPT
+  try {
+    const r = await fetch('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', { credentials: 'include' });
+    if (r.ok) {
+      const data = await r.json();
+      if (data?.account_plan || data?.accounts) return { service: 'chatgpt', label: 'ChatGPT' };
+    }
+  } catch (_) {}
+
+  // 3. Gemini (presence check only)
+  try {
+    const r = await fetch('https://gemini.google.com/app', { credentials: 'include' });
+    if (r.ok && r.url.includes('gemini.google.com/app')) return { service: 'gemini', label: 'Gemini' };
+  } catch (_) {}
+
+  return null;
+}
+
+async function collectSSE(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let fullText = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    for (const line of chunk.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const raw = line.slice(6).trim();
+      if (raw === '[DONE]') continue;
+      try {
+        const ev = JSON.parse(raw);
+        // Claude.ai: {completion: "..."} or {delta: {text: "..."}}
+        // ChatGPT:   {choices: [{delta: {content: "..."}}]}
+        fullText += ev.completion ?? ev.delta?.text ?? ev.choices?.[0]?.delta?.content ?? '';
+      } catch (_) {}
+    }
+  }
+  return fullText;
+}
+
+async function callClaudeWeb(session, systemPrompt, userPrompt) {
+  const base = `https://claude.ai/api/organizations/${session.orgId}`;
+
+  // Create temporary conversation
+  const convRes = await fetch(`${base}/chat_conversations`, {
+    method: 'POST', credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: '', uuid: crypto.randomUUID() }),
+  });
+  if (!convRes.ok) throw new Error(`Claude conv create: ${convRes.status}`);
+  const conv = await convRes.json();
+  const convId = conv.uuid;
+
+  // Request completion (SSE)
+  const compRes = await fetch(`${base}/chat_conversations/${convId}/completion`, {
+    method: 'POST', credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      prompt: `\n\nHuman: [System: ${systemPrompt}]\n\n${userPrompt}\n\nAssistant:`,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      model: 'claude-haiku-4-5',
+      attachments: [], files: [],
+    }),
+  });
+  if (!compRes.ok) throw new Error(`Claude completion: ${compRes.status}`);
+  const text = await collectSSE(compRes);
+
+  // Cleanup: delete temp conversation (best-effort)
+  fetch(`${base}/chat_conversations/${convId}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+  return text;
+}
+
+async function callChatGPTWeb(systemPrompt, userPrompt) {
+  const res = await fetch('https://chatgpt.com/backend-api/conversation', {
+    method: 'POST', credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      action: 'next',
+      messages: [
+        { id: crypto.randomUUID(), author: { role: 'system' }, content: { content_type: 'text', parts: [systemPrompt] } },
+        { id: crypto.randomUUID(), author: { role: 'user' }, content: { content_type: 'text', parts: [userPrompt] } },
+      ],
+      model: 'gpt-4o-mini',
+      parent_message_id: crypto.randomUUID(),
+      timezone_offset_min: new Date().getTimezoneOffset(),
+      conversation_mode: { kind: 'primary_assistant' },
+    }),
+  });
+  if (!res.ok) throw new Error(`ChatGPT request: ${res.status}`);
+  return collectSSE(res);
+}
+
+async function callLLMEvaluate(session, systemPrompt, userPrompt) {
+  if (session.service === 'claude') return callClaudeWeb(session, systemPrompt, userPrompt);
+  if (session.service === 'chatgpt') return callChatGPTWeb(systemPrompt, userPrompt);
+  throw new Error('Gemini evaluation not yet implemented — use Claude.ai or ChatGPT');
+}
 
 // ── Wire up buttons ──────────────────────────────────────────────────────────
 document.addEventListener('click', (e) => {
@@ -3810,13 +3920,14 @@ document.addEventListener('click', (e) => {
       (async () => {
         document.querySelectorAll('.btn').forEach(b => b.disabled = true);
 
-        // 1. Get stored API key
-        const { anthropicApiKey } = await chrome.storage.local.get(['anthropicApiKey']);
-        if (!anthropicApiKey) {
-          logError('No API key saved — enter your Anthropic key in the AI Evaluation section.');
+        // 1. Get detected LLM session
+        const session = window.__llmSession;
+        if (!session) {
+          logError('No LLM session detected — log in to Claude.ai, ChatGPT, or Gemini in this browser first.');
           document.querySelectorAll('.btn').forEach(b => b.disabled = false);
           return;
         }
+        log(`Using ${session.label} session…`);
 
         // 2. Read shortRows + full question data from page context
         const [read] = await chrome.scripting.executeScript({
@@ -3869,23 +3980,7 @@ document.addEventListener('click', (e) => {
           ].join('\n');
 
           try {
-            const res = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: {
-                'x-api-key': anthropicApiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-              },
-              body: JSON.stringify({
-                model: 'claude-haiku-4-5-20251001',
-                max_tokens: 4096,
-                system: SYSTEM,
-                messages: [{ role: 'user', content: userPrompt }],
-              }),
-            });
-            const data = await res.json();
-            if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-            const text = data.content?.[0]?.text || '';
+            const text = await callLLMEvaluate(session, SYSTEM, userPrompt);
             const match = text.match(/\[[\s\S]*\]/);
             if (!match) throw new Error('No JSON array in response');
             const parsed = JSON.parse(match[0]);
