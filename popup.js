@@ -3792,7 +3792,10 @@ document.addEventListener('click', (e) => {
         try {
           const entries = await scrapeGrades();
           if (!entries || !entries.length) { log('No grades found — is the marking/moderation view open?', 'err'); return; }
-          const detectedMax = entries[0].maxMark || parseInt($('#report-max').value, 10) || 50;
+          // Prefer maxMark from cache; fall back to highest actual mark seen; then manual input
+          const cacheMax = Math.max(...entries.map(e => e.maxMark || 0));
+          const markCeil = Math.ceil(Math.max(...entries.map(e => e.mark || 0)));
+          const detectedMax = cacheMax || markCeil || parseInt($('#report-max').value, 10) || 50;
           $('#report-max').value = detectedMax;
           const hasAdj = entries.some(e => e.adj != null && e.adj !== 0);
           const scCount = entries.filter(e => e.specialCon).length;
@@ -3823,19 +3826,21 @@ document.addEventListener('click', (e) => {
           log(`Loaded: ${data.workOutcomes.length} students, ${data.questions.length} questions, ${data.accessCodes.length} access codes`, 'ok');
           const model = buildAnalysisModel(data);
 
-          // Populate grouping dropdown
+          // Populate grouping dropdown — always keep "Full cohort" as first option
           const groupSel = document.getElementById('analysis-grouping');
-          if (groupSel && model.groupings.length) {
+          if (groupSel) {
             const currentVal = groupSel.value;
-            groupSel.innerHTML = '';
+            groupSel.innerHTML = '<option value="">Full cohort (no grouping)</option>';
             model.groupings.forEach(g => {
               const opt = document.createElement('option');
               opt.value = g.id; opt.textContent = g.label;
               groupSel.appendChild(opt);
             });
-            // Restore previous selection if still valid, otherwise pick first
+            // Restore previous selection only if it's still a valid dimension
             if (currentVal && model.groupings.some(g => g.id === currentVal)) {
               groupSel.value = currentVal;
+            } else {
+              groupSel.value = '';
             }
           }
 
@@ -4729,7 +4734,11 @@ function buildAnalysisModel(raw) {
   const enrollByWork = {};
   raw.enrollments.filter(e => !e.deleted).forEach(e => { enrollByWork[e.workId] = e; });
 
-  const maxScore = raw.workOutcomes[0]?.maxScore || raw.assessmentSettings[0]?.maxGrade || 40;
+  // Use the max across all work outcomes to avoid a null first entry causing wrong fallback
+  const maxScore = Math.max(...raw.workOutcomes.map(wo => wo.maxScore || 0))
+    || raw.assessmentSettings[0]?.maxGrade
+    || Math.ceil(Math.max(...raw.workOutcomes.map(wo => wo.score || 0)))
+    || 40;
   const examWritingTime = raw.assessmentSettings[0]?.examWritingTime || 50;
 
   const students = raw.workOutcomes.map(wo => {
@@ -5031,7 +5040,7 @@ document.getElementById('btn-load-groups')?.addEventListener('click', async () =
     window._analysisModel = model;
     const groupSel = document.getElementById('analysis-grouping');
     if (groupSel) {
-      groupSel.innerHTML = '';
+      groupSel.innerHTML = '<option value="">Full cohort (no grouping)</option>';
       if (model.groupings.length) {
         model.groupings.forEach(g => {
           const opt = document.createElement('option');
@@ -5040,9 +5049,9 @@ document.getElementById('btn-load-groups')?.addEventListener('click', async () =
         });
         log(`Detected ${model.groupings.length} grouping dimension(s): ${model.groupings.map(g => g.label).join(', ')}`, 'ok');
       } else {
-        groupSel.innerHTML = '<option value="">(no grouping dimensions found)</option>';
         log('No grouping dimensions detected in this assessment.', 'err');
       }
+      groupSel.value = '';
     }
   } catch (err) {
     log(`Failed to load groups: ${err.message}`, 'err');
@@ -5093,13 +5102,48 @@ const GROUP_COLORS = ['#1565c0', '#2e7d32', '#f9a825', '#ef6c00', '#c62828', '#7
 // ── Analysis Report 1: Tute Group Comparison ────────────────────────────────
 
 function renderGroupComparisonReport(container, model) {
-  // Get selected grouping dimension
+  // Get selected grouping dimension (empty string = "Full cohort")
   const groupSel = document.getElementById('analysis-grouping');
-  const dimId = groupSel?.value || (model.groupings[0]?.id);
-  const dim = model.groupings.find(g => g.id === dimId);
+  const dimId = groupSel?.value || '';
+  const dim = model.groupings.find(g => g.id === dimId) || null;
 
   if (!dim) {
-    container.appendChild(makeSubtext('No grouping dimensions detected in the data.'));
+    // Full-cohort view: grade band breakdown for entire class
+    const cohortPcts = model.students.map(s => pct(s.score, s.maxScore));
+    const cohortStats = analysisStats(cohortPcts);
+    container.appendChild(makeTitle(`Full Cohort Overview — ${model.students.length} students`));
+    container.appendChild(makeSubtext(`Mean: ${cohortStats.mean}% | Median: ${cohortStats.median}% | SD: ${cohortStats.sd}% | Min: ${cohortStats.min}% | Max: ${cohortStats.max}%`));
+    if (model.groupings.length) {
+      container.appendChild(makeSubtext(`Select a grouping dimension above to compare groups. Available: ${model.groupings.map(g => g.label).join(', ')}`));
+    } else {
+      container.appendChild(makeSubtext('No grouping dimensions detected. Load data from a page with tutorial groups or access codes to enable group comparison.'));
+    }
+    // Grade band bar chart for full cohort
+    const bandCounts = GRADE_BANDS.map(b => ({ ...b, count: 0 }));
+    cohortPcts.forEach(p => {
+      for (let i = GRADE_BANDS.length - 1; i >= 0; i--) {
+        if (p >= GRADE_BANDS[i].min) { bandCounts[i].count++; break; }
+      }
+    });
+    const n = model.students.length;
+    const series = [{ name: 'Students', color: '#1565c0', values: bandCounts.map(b => b.count) }];
+    const groups = bandCounts.map(b => ({ label: b.label, sub: `${b.min}%+` }));
+    const canvas = drawGroupedBarChart(groups, series, { yLabel: '# Students', height: 200 });
+    // Annotate bars with count + %
+    const ctx = canvas.getContext('2d');
+    const barW = canvas.width / bandCounts.length;
+    const peakH = 200 - 44 - 20;
+    const peak = Math.max(...bandCounts.map(b => b.count), 1);
+    bandCounts.forEach((b, i) => {
+      if (!b.count) return;
+      const barH = (b.count / peak) * peakH;
+      const x = 40 + i * (canvas.width - 50) / bandCounts.length + (canvas.width - 50) / bandCounts.length / 2;
+      const y = 20 + peakH - barH - 4;
+      ctx.fillStyle = '#333'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(`${b.count} (${Math.round(b.count / n * 100)}%)`, x, y);
+    });
+    container.appendChild(canvas);
+    addCopyButton(container, canvas);
     return;
   }
 
