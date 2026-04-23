@@ -5224,8 +5224,9 @@ function renderGroupComparisonReport(container, model) {
 function renderBloomsReport(container, model) {
   const bloomLevels = ['remember', 'understand', 'apply', 'analyze', 'evaluate', 'create'];
   const bloomData = {};
+  const usedQuestions = model.questions.filter(q => (model.qOutcomesByQuestion[q.id] || []).length > 0);
 
-  model.questions.forEach(q => {
+  usedQuestions.forEach(q => {
     if (!q.bloom) return;
     const level = bloomLevels.find(l => q.bloom.startsWith(l)) || q.bloom;
     if (!bloomData[level]) bloomData[level] = { questions: [], totalPoints: 0, outcomes: [] };
@@ -5236,11 +5237,11 @@ function renderBloomsReport(container, model) {
   });
 
   const levels = bloomLevels.filter(l => bloomData[l]);
-  const untagged = model.questions.filter(q => !q.bloom);
+  const untagged = usedQuestions.filter(q => !q.bloom);
   const dim = getActiveGrouping(model);
   const { catGroupMeans, groupNames } = dim ? computeGroupMeans(bloomData, model, dim) : { catGroupMeans: {}, groupNames: [] };
 
-  container.appendChild(makeTitle(`Cognitive Complexity — ${levels.length} levels${dim ? ` by ${dim.label}` : ''}`));
+  container.appendChild(makeTitle(`Cognitive Complexity — ${usedQuestions.length} questions${dim ? ` by ${dim.label}` : ''}`));
   if (untagged.length) container.appendChild(makeSubtext(`${untagged.length} questions without cognitive complexity tags excluded`));
 
   const headers = ['Cognitive Level', { label: 'Questions', num: true }, { label: 'Points', num: true },
@@ -5287,8 +5288,9 @@ function renderBloomsReport(container, model) {
 
 function renderTopicReport(container, model) {
   const weekData = {};
+  const usedQuestions = model.questions.filter(q => (model.qOutcomesByQuestion[q.id] || []).length > 0);
 
-  model.questions.forEach(q => {
+  usedQuestions.forEach(q => {
     const label = q.week || '(untagged)';
     if (!weekData[label]) weekData[label] = { questions: [], totalPoints: 0, outcomes: [] };
     weekData[label].questions.push(q);
@@ -5306,7 +5308,7 @@ function renderTopicReport(container, model) {
   const dim = getActiveGrouping(model);
   const { catGroupMeans, groupNames } = dim ? computeGroupMeans(weekData, model, dim) : { catGroupMeans: {}, groupNames: [] };
 
-  container.appendChild(makeTitle(`Topic / Week Performance — ${weeks.length} topics${dim ? ` by ${dim.label}` : ''}`));
+  container.appendChild(makeTitle(`Topic / Week Performance — ${usedQuestions.length} questions, ${weeks.length} topics${dim ? ` by ${dim.label}` : ''}`));
 
   const headers = ['Week / Topic', { label: 'Questions', num: true }, { label: 'Points', num: true },
     'Types', { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true },
@@ -5351,8 +5353,9 @@ function renderTopicReport(container, model) {
 function renderDifficultyReport(container, model) {
   const diffLevels = ['EASY', 'MEDIUM', 'HARD'];
   const diffData = {};
+  const usedQuestions = model.questions.filter(q => (model.qOutcomesByQuestion[q.id] || []).length > 0);
 
-  model.questions.forEach(q => {
+  usedQuestions.forEach(q => {
     const d = q.difficulty || '(untagged)';
     if (!diffData[d]) diffData[d] = { questions: [], outcomes: [] };
     diffData[d].questions.push(q);
@@ -5364,7 +5367,7 @@ function renderDifficultyReport(container, model) {
   const dim = getActiveGrouping(model);
   const { catGroupMeans, groupNames } = dim ? computeGroupMeans(diffData, model, dim) : { catGroupMeans: {}, groupNames: [] };
 
-  container.appendChild(makeTitle(`Difficulty Analysis — Tagged vs Actual Performance${dim ? ` by ${dim.label}` : ''}`));
+  container.appendChild(makeTitle(`Difficulty Analysis — ${usedQuestions.length} questions${dim ? ` by ${dim.label}` : ''}`));
 
   const headers = ['Tagged Difficulty', { label: 'Questions', num: true }, { label: 'Responses', num: true },
     { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true }, 'Validation',
@@ -5429,8 +5432,9 @@ function renderDifficultyReport(container, model) {
 
 function renderQuestionTypeReport(container, model) {
   const typeData = {};
+  const usedQuestions = model.questions.filter(q => (model.qOutcomesByQuestion[q.id] || []).length > 0);
 
-  model.questions.forEach(q => {
+  usedQuestions.forEach(q => {
     const t = q.type || 'UNKNOWN';
     if (!typeData[t]) typeData[t] = { questions: [], totalPoints: 0, outcomes: [] };
     typeData[t].questions.push(q);
@@ -5447,7 +5451,7 @@ function renderQuestionTypeReport(container, model) {
   const dim = getActiveGrouping(model);
   const { catGroupMeans, groupNames } = dim ? computeGroupMeans(typeData, model, dim) : { catGroupMeans: {}, groupNames: [] };
 
-  container.appendChild(makeTitle(`Question Type Breakdown — ${model.questions.length} questions${dim ? ` by ${dim.label}` : ''}`));
+  container.appendChild(makeTitle(`Question Type Breakdown — ${usedQuestions.length} questions${dim ? ` by ${dim.label}` : ''}`));
 
   const headers = ['Type', { label: 'Questions', num: true }, { label: 'Total Pts', num: true },
     { label: 'Weight', num: true }, { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true },
