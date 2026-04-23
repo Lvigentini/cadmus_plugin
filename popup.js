@@ -4684,6 +4684,10 @@ async function loadAnalysisData() {
         questions: (byType['Question'] || []).map(q => ({
           id: q.id, questionType: q.questionType, difficulty: q.difficulty,
           points: q.points,
+          // MATCHING: correctValues holds one entry per pair — its length is the true max score
+          matchPairs: q.questionType === 'MATCHING'
+            ? (q.body?.fields?.[0]?.response?.correctValues?.length ?? null)
+            : null,
           tagRefs: (q.tags || []).map(t => t.__ref?.replace('QuestionTag:', '') || t),
         })),
         questionTags: slim(byType['QuestionTag'], ['id', 'name', 'label', 'value', 'tagType', 'type']),
@@ -4802,6 +4806,7 @@ function buildAnalysisModel(raw) {
       type: q.questionType,
       difficulty: q.difficulty,
       points: q.points ?? 1,
+      matchPairs: q.matchPairs || null,
       bloom: bloomTag ? (bloomTag.name || bloomTag.label || bloomTag.value || '').toLowerCase() : null,
       week: weekTag ? (weekTag.name || weekTag.label || weekTag.value || '') : null,
       topics: topicTags.map(t => t.name || t.label || t.value || ''),
@@ -4819,10 +4824,29 @@ function buildAnalysisModel(raw) {
         score: qo.score ?? 0,
         automark: qo.automark ?? 0,
         markerModifier: qo.markerModifier ?? 0,
-        maxScore: qo.maxScore ?? questionMap[qo.questionId]?.points ?? 1,
+        maxScore: 1, // placeholder; corrected below
         studentIdx: si,
       });
     });
+  });
+
+  // Fix per-question maxScore — QuestionOutcome has no maxScore field in the cache:
+  //   MATCHING: use correctValues.length (true number of pairs) from Question body
+  //   SHORT/others: if any student scored > 1, use the highest observed score as denominator
+  //   (MCQ/BLANKS always score 0–1, so their maxScore stays 1)
+  const questionModelMap = {};
+  questions.forEach(q => { questionModelMap[q.id] = q; });
+  Object.entries(qOutcomesByQuestion).forEach(([qid, outcomes]) => {
+    const q = questionModelMap[qid];
+    if (!q) return;
+    let trueMax;
+    if (q.type === 'MATCHING' && q.matchPairs) {
+      trueMax = q.matchPairs;
+    } else {
+      const observedMax = Math.max(...outcomes.map(o => o.score));
+      if (observedMax > 1) trueMax = observedMax;
+    }
+    if (trueMax) outcomes.forEach(o => { o.maxScore = trueMax; });
   });
 
   return {
