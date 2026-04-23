@@ -300,12 +300,13 @@
         <div class="card-body" style="padding-top:14px">
           <p class="analysis-section-label">Group Comparison</p>
           <p class="fix-hint">Compare performance across student groups. Grouping dimensions are auto-detected from the Apollo cache.</p>
-          <label style="margin-top:6px;display:block">
-            Group by
-            <select id="analysis-grouping" style="width:100%;margin-top:4px;padding:5px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px">
-              <option value="">(click a report to detect groupings)</option>
+          <label style="margin-top:6px;display:block">Group by</label>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+            <select id="analysis-grouping" style="flex:1;padding:5px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px">
+              <option value="">(load a report or click "Load groups")</option>
             </select>
-          </label>
+            <button id="btn-load-groups" class="btn" style="white-space:nowrap;padding:5px 10px;font-size:11px;flex-shrink:0">Load groups</button>
+          </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             <button class="btn btn--analysis" data-action="reportGroupComparison">Group Comparison</button>
           </div>

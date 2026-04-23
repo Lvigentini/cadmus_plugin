@@ -3623,13 +3623,14 @@ document.addEventListener('click', (e) => {
   if (toggle.id === 'report-split-sc' && window._reportData) renderReport();
 });
 
-// Re-render group comparison when grouping dropdown changes
+// Re-render last active report when grouping dropdown changes
 document.getElementById('analysis-grouping')?.addEventListener('change', () => {
   const model = window._analysisModel;
-  if (!model) return;
+  const renderer = window._lastReportRenderer;
+  if (!model || !renderer) return;
   const output = document.getElementById('report-output');
   output.innerHTML = '';
-  renderGroupComparisonReport(output, model);
+  renderer(output, model);
 });
 
 // Helper: read toggle state
@@ -3838,7 +3839,7 @@ document.addEventListener('click', (e) => {
             }
           }
 
-          // Store model for re-use on grouping change
+          // Store model and last renderer for re-use on grouping change
           window._analysisModel = model;
 
           const output = document.getElementById('report-output');
@@ -3852,6 +3853,7 @@ document.addEventListener('click', (e) => {
             reportTiming: renderTimingReport,
             reportAutomark: renderAutomarkReport,
           };
+          window._lastReportRenderer = renderers[action];
           renderers[action](output, model);
         } catch (err) {
           log(`Report failed: ${err.message}`, 'err');
@@ -4667,7 +4669,8 @@ async function loadAnalysisData() {
           questionOutcomeRefs: (wo.questionOutcomes || []).map(r => r.__ref?.replace('QuestionOutcome:', '')),
         })),
         questionOutcomes: (byType['QuestionOutcome'] || []).map(qo => ({
-          id: qo.id, questionId: qo.questionId,
+          id: qo.id,
+          questionId: qo.questionId || qo.question?.__ref?.replace('Question:', ''),
           score: qo.scoreBreakdown?.score,
           automark: qo.scoreBreakdown?.automark,
           markerModifier: qo.scoreBreakdown?.markerModifier,
@@ -5016,6 +5019,77 @@ function makeChartLegend(items) {
   return legend;
 }
 
+// ── Load groups button ───────────────────────────────────────────────────────
+
+document.getElementById('btn-load-groups')?.addEventListener('click', async () => {
+  const btn = document.getElementById('btn-load-groups');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const data = await loadAnalysisData();
+    if (!data) { log('Apollo cache not found — is the Cadmus page fully loaded?', 'err'); return; }
+    const model = buildAnalysisModel(data);
+    window._analysisModel = model;
+    const groupSel = document.getElementById('analysis-grouping');
+    if (groupSel) {
+      groupSel.innerHTML = '';
+      if (model.groupings.length) {
+        model.groupings.forEach(g => {
+          const opt = document.createElement('option');
+          opt.value = g.id; opt.textContent = g.label;
+          groupSel.appendChild(opt);
+        });
+        log(`Detected ${model.groupings.length} grouping dimension(s): ${model.groupings.map(g => g.label).join(', ')}`, 'ok');
+      } else {
+        groupSel.innerHTML = '<option value="">(no grouping dimensions found)</option>';
+        log('No grouping dimensions detected in this assessment.', 'err');
+      }
+    }
+  } catch (err) {
+    log(`Failed to load groups: ${err.message}`, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load groups';
+  }
+});
+
+// ── Grouping helpers for sub-reports ─────────────────────────────────────────
+
+function getActiveGrouping(model) {
+  const dimId = document.getElementById('analysis-grouping')?.value;
+  if (!dimId) return null;
+  return model.groupings.find(g => g.id === dimId) || null;
+}
+
+// Given a map of { catKey → { outcomes: [{pct, studentIdx}] } }, returns
+// { catKey → { groupName → meanPct } } and sorted group names.
+function computeGroupMeans(categoryMap, model, dim) {
+  const catGroupMeans = {};
+  const allGroupNames = new Set();
+  for (const [cat, data] of Object.entries(categoryMap)) {
+    const byGroup = {};
+    data.outcomes.forEach(o => {
+      const s = model.students[o.studentIdx];
+      if (!s) return;
+      const g = dim.groupFn(s);
+      if (!byGroup[g]) byGroup[g] = [];
+      byGroup[g].push(o.pct);
+      allGroupNames.add(g);
+    });
+    catGroupMeans[cat] = {};
+    for (const [g, pcts] of Object.entries(byGroup)) {
+      catGroupMeans[cat][g] = analysisStats(pcts).mean;
+    }
+  }
+  const catchAll = /^\(|^unknown/i;
+  const groupNames = [...allGroupNames].sort((a, b) => {
+    if (catchAll.test(a) && !catchAll.test(b)) return 1;
+    if (!catchAll.test(a) && catchAll.test(b)) return -1;
+    return a.localeCompare(b);
+  });
+  return { catGroupMeans, groupNames };
+}
+
+const GROUP_COLORS = ['#1565c0', '#2e7d32', '#f9a825', '#ef6c00', '#c62828', '#7b1fa2', '#00838f', '#4e342e'];
+
 // ── Analysis Report 1: Tute Group Comparison ────────────────────────────────
 
 function renderGroupComparisonReport(container, model) {
@@ -5114,26 +5188,30 @@ function renderBloomsReport(container, model) {
     bloomData[level].questions.push(q);
     bloomData[level].totalPoints += q.points;
     const outcomes = model.qOutcomesByQuestion[q.id] || [];
-    outcomes.forEach(o => {
-      bloomData[level].outcomes.push({ pct: pct(o.score, o.maxScore) });
-    });
+    outcomes.forEach(o => bloomData[level].outcomes.push({ pct: pct(o.score, o.maxScore), studentIdx: o.studentIdx }));
   });
 
   const levels = bloomLevels.filter(l => bloomData[l]);
   const untagged = model.questions.filter(q => !q.bloom);
+  const dim = getActiveGrouping(model);
+  const { catGroupMeans, groupNames } = dim ? computeGroupMeans(bloomData, model, dim) : { catGroupMeans: {}, groupNames: [] };
 
-  container.appendChild(makeTitle(`Cognitive Complexity — ${levels.length} levels`));
-  if (untagged.length) {
-    container.appendChild(makeSubtext(`${untagged.length} questions without cognitive complexity tags excluded`));
-  }
+  container.appendChild(makeTitle(`Cognitive Complexity — ${levels.length} levels${dim ? ` by ${dim.label}` : ''}`));
+  if (untagged.length) container.appendChild(makeSubtext(`${untagged.length} questions without cognitive complexity tags excluded`));
 
-  // Heatmap table
+  const headers = ['Cognitive Level', { label: 'Questions', num: true }, { label: 'Points', num: true },
+    { label: 'Responses', num: true }, { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true },
+    ...groupNames.map(g => ({ label: g, num: true }))];
+
   const tableRows = levels.map(level => {
     const d = bloomData[level];
-    const pcts = d.outcomes.map(o => o.pct);
-    const stats = analysisStats(pcts);
+    const stats = analysisStats(d.outcomes.map(o => o.pct));
     const meanPct = stats.mean;
     const bg = meanPct >= 70 ? '#c8e6c9' : meanPct >= 50 ? '#fff9c4' : '#ffcdd2';
+    const groupCells = groupNames.map(g => {
+      const m = catGroupMeans[level]?.[g] ?? null;
+      return { html: m !== null ? `${m}%` : '—', cls: 'num' };
+    });
     return [
       level.charAt(0).toUpperCase() + level.slice(1),
       { html: `${d.questions.length}`, cls: 'num' },
@@ -5142,25 +5220,22 @@ function renderBloomsReport(container, model) {
       { html: `<span style="background:${bg};padding:2px 6px;border-radius:3px;font-weight:600">${meanPct}%</span>`, cls: 'num' },
       { html: `${stats.median}%`, cls: 'num' },
       { html: `${stats.sd}%`, cls: 'num' },
+      ...groupCells,
     ];
   });
+  container.appendChild(makeTable(headers, tableRows));
 
-  container.appendChild(makeTable(
-    ['Cognitive Level', { label: 'Questions', num: true }, { label: 'Points', num: true },
-     { label: 'Responses', num: true }, { label: 'Mean %', num: true },
-     { label: 'Median %', num: true }, { label: 'SD', num: true }],
-    tableRows
-  ));
+  const chartGroups = levels.map(l => ({ label: l.charAt(0).toUpperCase() + l.slice(1) }));
+  const series = dim && groupNames.length
+    ? groupNames.map((g, i) => ({
+        name: g, color: GROUP_COLORS[i % GROUP_COLORS.length],
+        values: levels.map(l => catGroupMeans[l]?.[g] ?? 0),
+      }))
+    : [{ name: 'Mean % Correct', color: '#1976d2', values: levels.map(l => analysisStats(bloomData[l].outcomes.map(o => o.pct)).mean) }];
 
-  // Bar chart
-  const series = [{
-    name: 'Mean % Correct',
-    color: '#1976d2',
-    values: levels.map(l => bloomData[l] ? analysisStats(bloomData[l].outcomes.map(o => o.pct)).mean : 0),
-  }];
-  const groups = levels.map(l => ({ label: l.charAt(0).toUpperCase() + l.slice(1) }));
-  const canvas = drawGroupedBarChart(groups, series, { yLabel: 'Mean % Correct', height: 200 });
+  const canvas = drawGroupedBarChart(chartGroups, series, { yLabel: 'Mean % Correct', height: 220 });
   container.appendChild(canvas);
+  if (dim && groupNames.length) container.appendChild(makeChartLegend(series.map(s => ({ color: s.color, label: s.name }))));
   addCopyButton(container, canvas);
 }
 
@@ -5175,9 +5250,7 @@ function renderTopicReport(container, model) {
     weekData[label].questions.push(q);
     weekData[label].totalPoints += q.points;
     const outcomes = model.qOutcomesByQuestion[q.id] || [];
-    outcomes.forEach(o => {
-      weekData[label].outcomes.push({ pct: pct(o.score, o.maxScore) });
-    });
+    outcomes.forEach(o => weekData[label].outcomes.push({ pct: pct(o.score, o.maxScore), studentIdx: o.studentIdx }));
   });
 
   const weeks = Object.keys(weekData).sort((a, b) => {
@@ -5186,13 +5259,22 @@ function renderTopicReport(container, model) {
     return na - nb;
   });
 
-  container.appendChild(makeTitle(`Topic / Week Performance — ${weeks.length} topics`));
+  const dim = getActiveGrouping(model);
+  const { catGroupMeans, groupNames } = dim ? computeGroupMeans(weekData, model, dim) : { catGroupMeans: {}, groupNames: [] };
+
+  container.appendChild(makeTitle(`Topic / Week Performance — ${weeks.length} topics${dim ? ` by ${dim.label}` : ''}`));
+
+  const headers = ['Week / Topic', { label: 'Questions', num: true }, { label: 'Points', num: true },
+    'Types', { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true },
+    ...groupNames.map(g => ({ label: g, num: true }))];
 
   const tableRows = weeks.map(w => {
     const d = weekData[w];
-    const pcts = d.outcomes.map(o => o.pct);
-    const stats = analysisStats(pcts);
+    const stats = analysisStats(d.outcomes.map(o => o.pct));
     const types = [...new Set(d.questions.map(q => q.type))].join(', ');
+    const groupCells = groupNames.map(g => ({
+      html: catGroupMeans[w]?.[g] != null ? `${catGroupMeans[w][g]}%` : '—', cls: 'num',
+    }));
     return [
       w,
       { html: `${d.questions.length}`, cls: 'num' },
@@ -5201,23 +5283,22 @@ function renderTopicReport(container, model) {
       { html: `${stats.mean}%`, cls: 'num' },
       { html: `${stats.median}%`, cls: 'num' },
       { html: `${stats.sd}%`, cls: 'num' },
+      ...groupCells,
     ];
   });
+  container.appendChild(makeTable(headers, tableRows));
 
-  container.appendChild(makeTable(
-    ['Week / Topic', { label: 'Questions', num: true }, { label: 'Points', num: true },
-     'Types', { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true }],
-    tableRows
-  ));
+  const chartGroups = weeks.map(w => ({ label: w }));
+  const series = dim && groupNames.length
+    ? groupNames.map((g, i) => ({
+        name: g, color: GROUP_COLORS[i % GROUP_COLORS.length],
+        values: weeks.map(w => catGroupMeans[w]?.[g] ?? 0),
+      }))
+    : [{ name: 'Mean % Correct', color: '#1976d2', values: weeks.map(w => analysisStats(weekData[w].outcomes.map(o => o.pct)).mean) }];
 
-  // Bar chart
-  const series = [{
-    name: 'Mean % Correct', color: '#1976d2',
-    values: weeks.map(w => analysisStats(weekData[w].outcomes.map(o => o.pct)).mean),
-  }];
-  const groups = weeks.map(w => ({ label: w }));
-  const canvas = drawGroupedBarChart(groups, series, { yLabel: 'Mean % Correct', height: 200 });
+  const canvas = drawGroupedBarChart(chartGroups, series, { yLabel: 'Mean % Correct', height: 200 });
   container.appendChild(canvas);
+  if (dim && groupNames.length) container.appendChild(makeChartLegend(series.map(s => ({ color: s.color, label: s.name }))));
   addCopyButton(container, canvas);
 }
 
@@ -5232,24 +5313,29 @@ function renderDifficultyReport(container, model) {
     if (!diffData[d]) diffData[d] = { questions: [], outcomes: [] };
     diffData[d].questions.push(q);
     const outcomes = model.qOutcomesByQuestion[q.id] || [];
-    outcomes.forEach(o => {
-      diffData[d].outcomes.push({ pct: pct(o.score, o.maxScore), qType: q.type });
-    });
+    outcomes.forEach(o => diffData[d].outcomes.push({ pct: pct(o.score, o.maxScore), studentIdx: o.studentIdx, qType: q.type }));
   });
 
   const levels = [...diffLevels.filter(l => diffData[l]), ...Object.keys(diffData).filter(l => !diffLevels.includes(l))];
+  const dim = getActiveGrouping(model);
+  const { catGroupMeans, groupNames } = dim ? computeGroupMeans(diffData, model, dim) : { catGroupMeans: {}, groupNames: [] };
 
-  container.appendChild(makeTitle(`Difficulty Analysis — Tagged vs Actual Performance`));
+  container.appendChild(makeTitle(`Difficulty Analysis — Tagged vs Actual Performance${dim ? ` by ${dim.label}` : ''}`));
+
+  const headers = ['Tagged Difficulty', { label: 'Questions', num: true }, { label: 'Responses', num: true },
+    { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true }, 'Validation',
+    ...groupNames.map(g => ({ label: g, num: true }))];
 
   const tableRows = levels.map(level => {
     const d = diffData[level];
-    const pcts = d.outcomes.map(o => o.pct);
-    const stats = analysisStats(pcts);
-    // Flag mismatches
+    const stats = analysisStats(d.outcomes.map(o => o.pct));
     let mismatch = '';
     if (level === 'EASY' && stats.mean < 60) mismatch = 'Tagged EASY but mean <60%';
     else if (level === 'HARD' && stats.mean > 80) mismatch = 'Tagged HARD but mean >80%';
     else if (level === 'MEDIUM' && (stats.mean < 40 || stats.mean > 90)) mismatch = 'Unexpected range for MEDIUM';
+    const groupCells = groupNames.map(g => ({
+      html: catGroupMeans[level]?.[g] != null ? `${catGroupMeans[level][g]}%` : '—', cls: 'num',
+    }));
     return [
       level,
       { html: `${d.questions.length}`, cls: 'num' },
@@ -5258,38 +5344,39 @@ function renderDifficultyReport(container, model) {
       { html: `${stats.median}%`, cls: 'num' },
       { html: `${stats.sd}%`, cls: 'num' },
       mismatch ? { html: `<span class="analysis-flag">${mismatch}</span>` } : { html: '<span class="analysis-ok">OK</span>' },
+      ...groupCells,
     ];
   });
+  container.appendChild(makeTable(headers, tableRows));
 
-  container.appendChild(makeTable(
-    ['Tagged Difficulty', { label: 'Questions', num: true }, { label: 'Responses', num: true },
-     { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true }, 'Validation'],
-    tableRows
-  ));
+  const chartGroups = levels.map(l => ({ label: l }));
+  const series = dim && groupNames.length
+    ? groupNames.map((g, i) => ({
+        name: g, color: GROUP_COLORS[i % GROUP_COLORS.length],
+        values: levels.map(l => catGroupMeans[l]?.[g] ?? 0),
+      }))
+    : [{ name: 'Mean % Correct', color: '#1976d2', values: levels.map(l => analysisStats(diffData[l].outcomes.map(o => o.pct)).mean) }];
 
-  // Chart: grouped bars by difficulty level
-  const series = [{
-    name: 'Mean % Correct', color: '#1976d2',
-    values: levels.map(l => analysisStats(diffData[l].outcomes.map(o => o.pct)).mean),
-  }];
-  const groups = levels.map(l => ({ label: l }));
-  const canvas = drawGroupedBarChart(groups, series, { yLabel: 'Mean % Correct', height: 200 });
+  const canvas = drawGroupedBarChart(chartGroups, series, { yLabel: 'Mean % Correct', height: 200 });
   container.appendChild(canvas);
+  if (dim && groupNames.length) container.appendChild(makeChartLegend(series.map(s => ({ color: s.color, label: s.name }))));
 
-  // Expected difficulty line annotations
-  const ctx = canvas.getContext('2d');
-  const padL = 40, padT = 20, chartH = canvas.height - padT - 44;
-  ctx.setLineDash([4, 3]);
-  ctx.strokeStyle = '#d32f2f'; ctx.lineWidth = 1;
-  [80, 60, 40].forEach((threshold, i) => {
-    if (i < levels.length) {
-      const y = padT + chartH - (threshold / 100) * chartH;
-      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(canvas.width - 10, y); ctx.stroke();
-      ctx.fillStyle = '#d32f2f'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
-      ctx.fillText(`${threshold}%`, canvas.width - 12, y - 2);
-    }
-  });
-  ctx.setLineDash([]);
+  // Expected difficulty threshold lines (only meaningful on the overall single-series view)
+  if (!dim) {
+    const ctx = canvas.getContext('2d');
+    const padL = 40, padT = 20, chartH = canvas.height - padT - 44;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = '#d32f2f'; ctx.lineWidth = 1;
+    [80, 60, 40].forEach((threshold, i) => {
+      if (i < levels.length) {
+        const y = padT + chartH - (threshold / 100) * chartH;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(canvas.width - 10, y); ctx.stroke();
+        ctx.fillStyle = '#d32f2f'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(`${threshold}%`, canvas.width - 12, y - 2);
+      }
+    });
+    ctx.setLineDash([]);
+  }
 
   addCopyButton(container, canvas);
 }
@@ -5305,21 +5392,30 @@ function renderQuestionTypeReport(container, model) {
     typeData[t].questions.push(q);
     typeData[t].totalPoints += q.points;
     const outcomes = model.qOutcomesByQuestion[q.id] || [];
-    outcomes.forEach(o => {
-      typeData[t].outcomes.push({ pct: pct(o.score, o.maxScore), automark: o.automark, markerMod: o.markerModifier });
-    });
+    outcomes.forEach(o => typeData[t].outcomes.push({
+      pct: pct(o.score, o.maxScore), studentIdx: o.studentIdx,
+      automark: o.automark, markerMod: o.markerModifier,
+    }));
   });
 
   const types = Object.keys(typeData).sort();
   const totalPoints = types.reduce((s, t) => s + typeData[t].totalPoints, 0);
+  const dim = getActiveGrouping(model);
+  const { catGroupMeans, groupNames } = dim ? computeGroupMeans(typeData, model, dim) : { catGroupMeans: {}, groupNames: [] };
 
-  container.appendChild(makeTitle(`Question Type Breakdown — ${model.questions.length} questions`));
+  container.appendChild(makeTitle(`Question Type Breakdown — ${model.questions.length} questions${dim ? ` by ${dim.label}` : ''}`));
+
+  const headers = ['Type', { label: 'Questions', num: true }, { label: 'Total Pts', num: true },
+    { label: 'Weight', num: true }, { label: 'Mean %', num: true }, { label: 'Median %', num: true }, { label: 'SD', num: true },
+    ...groupNames.map(g => ({ label: g, num: true }))];
 
   const tableRows = types.map(type => {
     const d = typeData[type];
-    const pcts = d.outcomes.map(o => o.pct);
-    const stats = analysisStats(pcts);
+    const stats = analysisStats(d.outcomes.map(o => o.pct));
     const weight = totalPoints > 0 ? parseFloat(((d.totalPoints / totalPoints) * 100).toFixed(1)) : 0;
+    const groupCells = groupNames.map(g => ({
+      html: catGroupMeans[type]?.[g] != null ? `${catGroupMeans[type][g]}%` : '—', cls: 'num',
+    }));
     return [
       type,
       { html: `${d.questions.length}`, cls: 'num' },
@@ -5328,25 +5424,22 @@ function renderQuestionTypeReport(container, model) {
       { html: `${stats.mean}%`, cls: 'num' },
       { html: `${stats.median}%`, cls: 'num' },
       { html: `${stats.sd}%`, cls: 'num' },
+      ...groupCells,
     ];
   });
+  container.appendChild(makeTable(headers, tableRows));
 
-  container.appendChild(makeTable(
-    ['Type', { label: 'Questions', num: true }, { label: 'Total Pts', num: true },
-     { label: 'Weight', num: true }, { label: 'Mean %', num: true },
-     { label: 'Median %', num: true }, { label: 'SD', num: true }],
-    tableRows
-  ));
+  const chartGroups = types.map(t => ({ label: t, sub: `${typeData[t].questions.length}q / ${typeData[t].totalPoints}pts` }));
+  const series = dim && groupNames.length
+    ? groupNames.map((g, i) => ({
+        name: g, color: GROUP_COLORS[i % GROUP_COLORS.length],
+        values: types.map(t => catGroupMeans[t]?.[g] ?? 0),
+      }))
+    : [{ name: 'Mean % Correct', color: '#1976d2', values: types.map(t => analysisStats(typeData[t].outcomes.map(o => o.pct)).mean) }];
 
-  // Chart
-  const colors = { MCQ: '#1976d2', BLANKS: '#2e7d32', SHORT: '#ef6c00', MATCHING: '#7b1fa2' };
-  const series = [{
-    name: 'Mean % Correct', color: '#1976d2',
-    values: types.map(t => analysisStats(typeData[t].outcomes.map(o => o.pct)).mean),
-  }];
-  const groups = types.map(t => ({ label: t, sub: `${typeData[t].questions.length}q / ${typeData[t].totalPoints}pts` }));
-  const canvas = drawGroupedBarChart(groups, series, { yLabel: 'Mean % Correct', height: 200 });
+  const canvas = drawGroupedBarChart(chartGroups, series, { yLabel: 'Mean % Correct', height: 200 });
   container.appendChild(canvas);
+  if (dim && groupNames.length) container.appendChild(makeChartLegend(series.map(s => ({ color: s.color, label: s.name }))));
   addCopyButton(container, canvas);
 }
 
