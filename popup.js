@@ -2110,8 +2110,10 @@ function cadmusAction(action, options) {
     const uploaded = opts.uploadedAnswers || {};
 
     const cols = ['StudentName', 'StudentID', 'StudentEmail', 'QuestionNo', 'QuestionID',
-      'QuestionPrompt', 'ExpectedAnswer', 'StudentAnswer', 'AnswerSimilarity',
-      'AutomarkScore', 'FieldScore', 'FieldOutcomeId'];
+      'QuestionPrompt', 'ExpectedAnswer', 'StudentAnswer',
+      'AnswerSimilarity', 'AutomarkScore',
+      'LLMScore', 'LLMFlag', 'LLMJustification',
+      'FieldScore', 'FieldOutcomeId'];
     const esc = v => { const s = String(v ?? '').replace(/"/g, '""'); return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s}"` : s; };
 
     const enriched = rows.map(r => {
@@ -3510,6 +3512,23 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelector(`[data-panel="${t.dataset.tab}"]`).classList.add('active');
 }));
 
+// ── Anthropic API key management ─────────────────────────────────────────────
+chrome.storage.local.get(['anthropicApiKey'], ({ anthropicApiKey }) => {
+  const status = document.getElementById('grading-api-key-status');
+  if (status) status.textContent = anthropicApiKey ? 'Key saved ✓' : 'No key saved';
+});
+
+document.getElementById('btn-save-api-key')?.addEventListener('click', () => {
+  const key = (document.getElementById('grading-api-key')?.value || '').trim();
+  if (!key.startsWith('sk-ant-')) { alert('Enter a valid Anthropic API key (starts with sk-ant-)'); return; }
+  chrome.storage.local.set({ anthropicApiKey: key }, () => {
+    const status = document.getElementById('grading-api-key-status');
+    if (status) status.textContent = 'Key saved ✓';
+    const inp = document.getElementById('grading-api-key');
+    if (inp) inp.value = '';
+  });
+});
+
 // ── File input handler ───────────────────────────────────────────────────────
 document.getElementById('import-file')?.addEventListener('change', (e) => {
   const file = e.target.files[0];
@@ -3722,6 +3741,9 @@ document.addEventListener('click', (e) => {
               (missing > 0 ? ` | <span style="color:#d32f2f">${missing} missing model answer(s)</span>` : ' | all model answers available');
             shortSummary.style.display = 'block';
           }
+          // Enable AI evaluation button now that data is loaded
+          const evalBtn = document.getElementById('btn-evaluate-short');
+          if (evalBtn) evalBtn.disabled = false;
         }
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
       })();
@@ -3781,6 +3803,129 @@ document.addEventListener('click', (e) => {
           downloadFile(result.csv, `cadmus_short_answers_${ts}.csv`, 'text/csv');
           log(`Exported ${result.rows} rows`, 'ok');
         }
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      })();
+      return;
+    case 'gradingEvaluateShort':
+      (async () => {
+        document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+
+        // 1. Get stored API key
+        const { anthropicApiKey } = await chrome.storage.local.get(['anthropicApiKey']);
+        if (!anthropicApiKey) {
+          logError('No API key saved — enter your Anthropic key in the AI Evaluation section.');
+          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+          return;
+        }
+
+        // 2. Read shortRows + full question data from page context
+        const [read] = await chrome.scripting.executeScript({
+          target: { tabId: cadmusTabId }, world: 'MAIN',
+          func: () => {
+            const state = window.__gradingState;
+            if (!state?.shortRows?.length) return null;
+            const questions = {};
+            Object.entries(state.questionBodies || {}).forEach(([id, qb]) => {
+              if (qb.questionType !== 'SHORT') return;
+              questions[id] = { prompt: qb.promptText || '', modelAnswer: qb.fields[0]?.correctValues?.[0] || '' };
+            });
+            return { shortRows: state.shortRows, questions };
+          },
+        });
+        if (!read?.result) {
+          logError('No SHORT data — run Load Data first.');
+          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+          return;
+        }
+
+        const { shortRows, questions } = read.result;
+
+        // 3. Group rows by questionId for batched evaluation
+        const byQuestion = {};
+        shortRows.forEach((r, idx) => {
+          if (!byQuestion[r.QuestionID]) byQuestion[r.QuestionID] = [];
+          byQuestion[r.QuestionID].push({ idx, answer: r.StudentAnswer, outcomeId: r.FieldOutcomeId });
+        });
+
+        log(`Evaluating ${shortRows.length} responses across ${Object.keys(byQuestion).length} questions in parallel…`);
+
+        const SYSTEM = 'You are an academic assessor evaluating student short-answer responses. Be rigorous: a student who merely paraphrases or echoes the question without adding substantive knowledge scores low. Always provide a one-sentence justification.';
+
+        // 4. One parallel API call per question, all students bundled
+        const results = {};
+        await Promise.all(Object.entries(byQuestion).map(async ([qid, entries]) => {
+          const q = questions[qid] || {};
+          const numberedAnswers = entries.map((e, i) => `${i + 1}. ${e.answer || '(no answer)'}`).join('\n');
+          const userPrompt = [
+            `QUESTION: ${q.prompt}`,
+            `MODEL ANSWER: ${q.modelAnswer}`,
+            '',
+            'Evaluate each student response below.',
+            'Score: 0 (no credit), 0.5 (partial credit), 1 (full credit).',
+            'Flag: GENUINE (demonstrates understanding beyond question wording), ECHO (restates question without adding substance), PARTIAL (some substance but incomplete), EMPTY (blank or off-topic).',
+            'Respond ONLY with a JSON array — one object per student in order — each with keys: score, flag, justification.',
+            '',
+            `STUDENT RESPONSES:\n${numberedAnswers}`,
+          ].join('\n');
+
+          try {
+            const res = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'x-api-key': anthropicApiKey,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 4096,
+                system: SYSTEM,
+                messages: [{ role: 'user', content: userPrompt }],
+              }),
+            });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+            const text = data.content?.[0]?.text || '';
+            const match = text.match(/\[[\s\S]*\]/);
+            if (!match) throw new Error('No JSON array in response');
+            const parsed = JSON.parse(match[0]);
+            entries.forEach((e, i) => {
+              const r = parsed[i] || {};
+              results[e.outcomeId] = {
+                LLMScore: r.score ?? '',
+                LLMFlag: (r.flag || 'ERROR').toUpperCase(),
+                LLMJustification: r.justification || '',
+              };
+            });
+            log(`Question ${qid.substring(0, 8)}…: ${entries.length} responses evaluated`, 'ok');
+          } catch (err) {
+            entries.forEach(e => {
+              results[e.outcomeId] = { LLMScore: '', LLMFlag: 'ERROR', LLMJustification: err.message };
+            });
+            log(`Question ${qid.substring(0, 8)}… failed: ${err.message}`, 'err');
+          }
+        }));
+
+        // 5. Write results back into page context shortRows keyed by FieldOutcomeId
+        await chrome.scripting.executeScript({
+          target: { tabId: cadmusTabId }, world: 'MAIN',
+          func: (results) => {
+            (window.__gradingState?.shortRows || []).forEach(r => {
+              const res = results[r.FieldOutcomeId];
+              if (res) Object.assign(r, res);
+            });
+          },
+          args: [results],
+        });
+
+        const echoCount = Object.values(results).filter(r => r.LLMFlag === 'ECHO').length;
+        const errorCount = Object.values(results).filter(r => r.LLMFlag === 'ERROR').length;
+        log(
+          `Evaluation complete — ${Object.keys(results).length} responses` +
+          (echoCount ? `, ${echoCount} flagged ECHO` : '') +
+          (errorCount ? `, ${errorCount} errors` : ''),
+          echoCount > 0 ? 'warn' : 'ok'
+        );
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
       })();
       return;
