@@ -3858,9 +3858,16 @@ async function callClaudeWeb(session, systemPrompt, userPrompt) {
 }
 
 async function callChatGPTWeb(systemPrompt, userPrompt) {
+  // Fetch bearer token — the conversation endpoint requires Authorization header, not just cookies
+  const sessRes = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' });
+  if (!sessRes.ok) throw new Error(`ChatGPT session: ${sessRes.status}`);
+  const sessData = await sessRes.json();
+  const accessToken = sessData?.accessToken;
+  if (!accessToken) throw new Error('ChatGPT session has no accessToken — try logging in again at chatgpt.com');
+
   const res = await fetch('https://chatgpt.com/backend-api/conversation', {
     method: 'POST', credentials: 'include',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
     body: JSON.stringify({
       action: 'next',
       messages: [
