@@ -3512,20 +3512,129 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelector(`[data-panel="${t.dataset.tab}"]`).classList.add('active');
 }));
 
-// ── LLM session detection ─────────────────────────────────────────────────────
+// ── Grading sub-tab wiring ────────────────────────────────────────────────────
+document.addEventListener('click', e => {
+  const subtab = e.target.closest('.grading-subtab');
+  if (!subtab) return;
+  const target = subtab.dataset.subtab;
+  document.querySelectorAll('.grading-subtab').forEach(t => {
+    const active = t.dataset.subtab === target;
+    t.style.color = active ? '#1a73e8' : '#888';
+    t.style.borderBottomColor = active ? '#1a73e8' : 'transparent';
+  });
+  document.querySelectorAll('.grading-subpanel').forEach(p => { p.style.display = 'none'; });
+  const panel = document.getElementById(`grading-subpanel-${target}`);
+  if (panel) panel.style.display = '';
+});
+
+// ── Settings init & persistence ───────────────────────────────────────────────
 (async () => {
-  const statusEl = document.getElementById('grading-ai-status');
-  if (!statusEl) return;
-  const session = await detectLLMSession();
-  if (session) {
-    statusEl.textContent = `Session detected: ${session.label}`;
-    statusEl.style.color = '#2e7d32';
-    window.__llmSession = session;
-  } else {
-    statusEl.textContent = 'No session found — log in to Claude.ai, ChatGPT, or Gemini in this browser.';
-    statusEl.style.color = '#c62828';
+  const stored = await chrome.storage.local.get([
+    'claudeApiKey', 'chatgptApiKey', 'geminiApiKey',
+    'dryRunDefault', 'shortSimilarityDefault',
+  ]);
+
+  // Apply dry run default to grading tab toggle
+  const dryRunDefault = stored.dryRunDefault !== false;
+  const dryRunToggle = document.getElementById('grading-dry-run');
+  const settingsDryRun = document.getElementById('settings-dry-run-default');
+  if (!dryRunDefault) {
+    if (dryRunToggle) { dryRunToggle.classList.remove('active'); dryRunToggle.querySelector('.toggle-label-text').textContent = 'Off'; dryRunToggle.setAttribute('aria-pressed', 'false'); }
+    if (settingsDryRun) { settingsDryRun.classList.remove('active'); settingsDryRun.querySelector('.toggle-label-text').textContent = 'Off'; settingsDryRun.setAttribute('aria-pressed', 'false'); }
   }
+
+  // Apply SHORT similarity default
+  if (stored.shortSimilarityDefault != null) {
+    const sim = stored.shortSimilarityDefault;
+    ['#short-import-similarity', '#short-similarity', '#settings-short-similarity'].forEach(sel => {
+      const el = document.querySelector(sel);
+      if (el) el.value = sim;
+    });
+  }
+
+  // Show API key saved status
+  const keyStatus = { claude: stored.claudeApiKey, chatgpt: stored.chatgptApiKey, gemini: stored.geminiApiKey };
+  Object.entries(keyStatus).forEach(([prov, key]) => {
+    const el = document.getElementById(`settings-${prov}-key-status`);
+    if (el) el.textContent = key ? 'API key saved' : '';
+  });
+
+  // Auto-detect LLM session on startup
+  const session = await detectLLMSession(stored);
+  updateLLMSessionUI(session);
 })();
+
+function updateLLMSessionUI(session) {
+  window.__llmSession = session || null;
+  const statusEl = document.getElementById('grading-ai-status');
+  if (session) {
+    if (statusEl) { statusEl.textContent = `AI: ${session.label} active`; statusEl.style.color = '#2e7d32'; }
+  } else {
+    if (statusEl) { statusEl.textContent = 'AI evaluation: no provider — configure in ⚙ Settings'; statusEl.style.color = '#c62828'; }
+  }
+}
+
+// Settings: dry run default sync
+document.getElementById('settings-dry-run-default')?.addEventListener('click', async function () {
+  const nowOn = !this.classList.contains('active');
+  this.classList.toggle('active', nowOn);
+  this.querySelector('.toggle-label-text').textContent = nowOn ? 'On' : 'Off';
+  this.setAttribute('aria-pressed', String(nowOn));
+  await chrome.storage.local.set({ dryRunDefault: nowOn });
+  // Sync to grading tab
+  const gt = document.getElementById('grading-dry-run');
+  if (gt) { gt.classList.toggle('active', nowOn); gt.querySelector('.toggle-label-text').textContent = nowOn ? 'On' : 'Off'; gt.setAttribute('aria-pressed', String(nowOn)); }
+});
+
+// Settings: SHORT similarity default
+document.getElementById('settings-short-similarity')?.addEventListener('change', async function () {
+  const val = parseInt(this.value, 10);
+  if (isNaN(val) || val < 0 || val > 100) return;
+  await chrome.storage.local.set({ shortSimilarityDefault: val });
+  ['#short-import-similarity', '#short-similarity'].forEach(sel => {
+    const el = document.querySelector(sel);
+    if (el) el.value = val;
+  });
+});
+
+// Settings: provider check buttons
+async function checkAndUpdateProvider(provider) {
+  const statusEl = document.getElementById(`settings-${provider}-status`);
+  if (statusEl) { statusEl.textContent = 'Checking…'; statusEl.style.color = '#888'; }
+  const stored = await chrome.storage.local.get(['claudeApiKey', 'chatgptApiKey', 'geminiApiKey']);
+  const session = await detectLLMSession(stored);
+  const matched = session?.service === provider ? session : null;
+  if (statusEl) {
+    statusEl.textContent = matched ? `${matched.label} active ✓` : 'No session detected';
+    statusEl.style.color = matched ? '#2e7d32' : '#c62828';
+  }
+  // Update the active session if this provider is now best
+  if (!window.__llmSession || matched) updateLLMSessionUI(session);
+}
+
+['claude', 'chatgpt', 'gemini'].forEach(prov => {
+  document.getElementById(`btn-check-${prov}`)?.addEventListener('click', () => checkAndUpdateProvider(prov));
+});
+
+// Settings: API key save/clear
+const KEY_STORAGE = { claude: 'claudeApiKey', chatgpt: 'chatgptApiKey', gemini: 'geminiApiKey' };
+['claude', 'chatgpt', 'gemini'].forEach(prov => {
+  document.getElementById(`btn-save-${prov}-key`)?.addEventListener('click', async () => {
+    const key = (document.getElementById(`settings-${prov}-key`)?.value || '').trim();
+    if (!key) return;
+    await chrome.storage.local.set({ [KEY_STORAGE[prov]]: key });
+    document.getElementById(`settings-${prov}-key`).value = '';
+    const statusEl = document.getElementById(`settings-${prov}-key-status`);
+    if (statusEl) statusEl.textContent = 'API key saved';
+    checkAndUpdateProvider(prov);
+  });
+  document.getElementById(`btn-clear-${prov}-key`)?.addEventListener('click', async () => {
+    await chrome.storage.local.remove(KEY_STORAGE[prov]);
+    const statusEl = document.getElementById(`settings-${prov}-key-status`);
+    if (statusEl) statusEl.textContent = '';
+    checkAndUpdateProvider(prov);
+  });
+});
 
 // ── File input handler ───────────────────────────────────────────────────────
 document.getElementById('import-file')?.addEventListener('change', (e) => {
@@ -3655,31 +3764,40 @@ const isToggleOn = (id) => document.getElementById(id)?.classList.contains('acti
 
 // ── LLM session helpers ───────────────────────────────────────────────────────
 
-async function detectLLMSession() {
-  // 1. Claude.ai
+async function detectLLMSession(stored = {}) {
+  // 1. Claude.ai browser session
   try {
     const r = await fetch('https://claude.ai/api/organizations', { credentials: 'include' });
     if (r.ok) {
       const orgs = await r.json();
       const orgId = Array.isArray(orgs) ? orgs[0]?.uuid : orgs?.uuid;
-      if (orgId) return { service: 'claude', label: 'Claude.ai', orgId };
+      if (orgId) return { service: 'claude', label: 'Claude.ai (session)', orgId };
     }
   } catch (_) {}
 
-  // 2. ChatGPT
+  // 2. ChatGPT browser session
   try {
     const r = await fetch('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', { credentials: 'include' });
     if (r.ok) {
       const data = await r.json();
-      if (data?.account_plan || data?.accounts) return { service: 'chatgpt', label: 'ChatGPT' };
+      if (data?.account_plan || data?.accounts) return { service: 'chatgpt', label: 'ChatGPT (session)' };
     }
   } catch (_) {}
 
-  // 3. Gemini (presence check only)
+  // 3. Gemini browser session (presence check)
   try {
     const r = await fetch('https://gemini.google.com/app', { credentials: 'include' });
-    if (r.ok && r.url.includes('gemini.google.com/app')) return { service: 'gemini', label: 'Gemini' };
+    if (r.ok && r.url.includes('gemini.google.com/app')) return { service: 'gemini', label: 'Gemini (session)' };
   } catch (_) {}
+
+  // 4. Claude API key fallback
+  if (stored.claudeApiKey) return { service: 'claude', label: 'Claude (API key)', apiKey: stored.claudeApiKey };
+
+  // 5. ChatGPT API key fallback
+  if (stored.chatgptApiKey) return { service: 'chatgpt', label: 'ChatGPT (API key)', apiKey: stored.chatgptApiKey };
+
+  // 6. Gemini API key fallback
+  if (stored.geminiApiKey) return { service: 'gemini', label: 'Gemini (API key)', apiKey: stored.geminiApiKey };
 
   return null;
 }
@@ -3759,10 +3877,50 @@ async function callChatGPTWeb(systemPrompt, userPrompt) {
   return collectSSE(res);
 }
 
+async function callClaudeAPI(apiKey, systemPrompt, userPrompt) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 4096, system: systemPrompt, messages: [{ role: 'user', content: userPrompt }] }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  return data.content?.[0]?.text || '';
+}
+
+async function callChatGPTAPI(apiKey, systemPrompt, userPrompt) {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  return data.choices?.[0]?.message?.content || '';
+}
+
+async function callGeminiAPI(apiKey, systemPrompt, userPrompt) {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] }] }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
 async function callLLMEvaluate(session, systemPrompt, userPrompt) {
+  // API key paths (official APIs — no side effects, non-streaming)
+  if (session.apiKey) {
+    if (session.service === 'claude') return callClaudeAPI(session.apiKey, systemPrompt, userPrompt);
+    if (session.service === 'chatgpt') return callChatGPTAPI(session.apiKey, systemPrompt, userPrompt);
+    if (session.service === 'gemini') return callGeminiAPI(session.apiKey, systemPrompt, userPrompt);
+  }
+  // Browser session paths (internal web APIs with SSE)
   if (session.service === 'claude') return callClaudeWeb(session, systemPrompt, userPrompt);
   if (session.service === 'chatgpt') return callChatGPTWeb(systemPrompt, userPrompt);
-  throw new Error('Gemini evaluation not yet implemented — use Claude.ai or ChatGPT');
+  throw new Error('Gemini session evaluation not yet implemented — add a Gemini API key in ⚙ Settings');
 }
 
 // ── Wire up buttons ──────────────────────────────────────────────────────────
@@ -3826,6 +3984,9 @@ document.addEventListener('click', (e) => {
           const summary = document.getElementById('grading-load-summary');
           summary.innerHTML = `<strong>${result.students}</strong> students | <strong>${result.blanksQuestions}</strong> BLANKS Qs (${result.blanksFields} fields, <span style="color:#d32f2f">${result.fixCandidates} penalised</span>) | <strong>${result.shortQuestions}</strong> SHORT Qs (${result.shortFields} rows)`;
           summary.style.display = 'block';
+          // Reveal sub-tab bar
+          const subtabBar = document.getElementById('grading-subtab-bar');
+          if (subtabBar) subtabBar.style.display = '';
           // Unlock BLANKS card
           const blanksCard = document.getElementById('card-grading-blanks');
           if (blanksCard) { blanksCard.style.opacity = '1'; blanksCard.style.pointerEvents = 'auto'; }

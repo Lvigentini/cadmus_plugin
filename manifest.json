@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cadmus Question Library Tools",
-  "version": "2.3.11",
+  "version": "2.3.12",
   "description": "Import and export questions (Excel, CSV, JSON, QTI XML), bulk edit points & shuffle, and manage Cadmus MFA question libraries. Supports MCQ, Matching, Fill-in-Blank, and Short Answer types.",
   "author": "Lorenzo Vigentini <lorenzo@cogentixai.com>",
   "homepage_url": "https://github.com/Lvigentini/cadmus_plugin",
@@ -9,8 +9,11 @@
   "host_permissions": [
     "https://*.cadmus.io/*",
     "https://claude.ai/*",
+    "https://api.anthropic.com/*",
     "https://chatgpt.com/*",
-    "https://gemini.google.com/*"
+    "https://api.openai.com/*",
+    "https://gemini.google.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "background": {
     "service_worker": "background.js"
