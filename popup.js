@@ -3858,16 +3858,31 @@ async function callClaudeWeb(session, systemPrompt, userPrompt) {
 }
 
 async function callChatGPTWeb(systemPrompt, userPrompt) {
-  // Fetch bearer token — the conversation endpoint requires Authorization header, not just cookies
+  // Fetch bearer token — conversation endpoint requires Authorization header, not just cookies
   const sessRes = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' });
   if (!sessRes.ok) throw new Error(`ChatGPT session: ${sessRes.status}`);
   const sessData = await sessRes.json();
   const accessToken = sessData?.accessToken;
   if (!accessToken) throw new Error('ChatGPT session has no accessToken — try logging in again at chatgpt.com');
 
+  const authHeader = { 'Authorization': `Bearer ${accessToken}` };
+
+  // Fetch sentinel token — ChatGPT bot-detection requires this before each conversation call
+  const reqRes = await fetch('https://chatgpt.com/backend-api/sentinel/chat-requirements', {
+    method: 'POST', credentials: 'include',
+    headers: { 'content-type': 'application/json', ...authHeader },
+    body: JSON.stringify({ conversation_id: null, messages: [{ author: { role: 'user' }, content: { content_type: 'text', parts: [userPrompt.slice(0, 100)] } }] }),
+  });
+  if (!reqRes.ok) throw new Error(`ChatGPT requirements: ${reqRes.status}`);
+  const reqData = await reqRes.json();
+  if (reqData.turnstile?.required || reqData.arkose?.required) {
+    throw new Error('ChatGPT requires a CAPTCHA challenge — add a ChatGPT API key in ⚙ Settings instead');
+  }
+  const sentinelHeaders = reqData.token ? { 'Openai-Sentinel-Chat-Requirements-Token': reqData.token } : {};
+
   const res = await fetch('https://chatgpt.com/backend-api/conversation', {
     method: 'POST', credentials: 'include',
-    headers: { 'content-type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+    headers: { 'content-type': 'application/json', ...authHeader, ...sentinelHeaders },
     body: JSON.stringify({
       action: 'next',
       messages: [
