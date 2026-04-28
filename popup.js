@@ -3436,6 +3436,19 @@ async function extractAssessmentQuestions() {
         });
       }
 
+      // Re-order questions to match visual DOM order.
+      // task.blocks array order in the Apollo cache is unreliable — it gets overwritten by
+      // whichever query ran last (grading, analytics, etc.). The page's rendered text is the
+      // only authoritative source of display order.
+      const pageText = (document.body.innerText || document.body.textContent || '').replace(/\s+/g, ' ');
+      const getPagePos = (q) => {
+        const txt = (extractDocText(q.body?.promptDoc) || q.shortPrompt || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+        if (!txt) return Infinity;
+        const pos = pageText.indexOf(txt);
+        return pos === -1 ? Infinity : pos;
+      };
+      questions.sort((a, b) => getPagePos(a) - getPagePos(b));
+
       return { questions, assessmentName, source: window.location.href };
     },
   });
