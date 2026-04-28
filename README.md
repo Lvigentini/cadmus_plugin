@@ -18,6 +18,8 @@ A Chrome extension that enhances the [Cadmus](https://cadmus.io) assessment plat
   - [Export Questions](#export-questions)
   - [Assessment Export](#assessment-export)
   - [Quick Report](#quick-report)
+  - [Grading Audit](#grading-audit)
+  - [Settings](#settings)
   - [Bulk Edit](#bulk-edit)
   - [Fix Matching Questions](#fix-matching-questions)
   - [Delete](#delete)
@@ -142,7 +144,10 @@ Export questions from the library to seven formats — choose between **selected
 | **QTI 1.2 XML** | `.xml` | Round-trip: export from one Cadmus library, re-import into another via this extension |
 | **Word — sorted by type** | `.docx` | Questions grouped under section headings (MCQ, Matching, FIB, Short Answer) with page breaks between sections. Full metadata, correct answers marked, explanations included |
 | **Word — randomised** | `.docx` | Fisher-Yates shuffle with type badges inline. Full metadata and correct answers included |
-| **Word — exam ready** | `.docx` | Randomised, clean format for student-facing use: no metadata, no correct answer markers, no explanations. Matching answers shuffled (not paired), FIB shows blanks only, short answer shows blank lines |
+| **Word — exam ready, randomised** | `.docx` | Randomised question and option order, clean student-facing format: no metadata, no correct answer markers, no explanations. Matching answers shuffled into a pool (not paired), FIB shows blanks only, short answer shows blank lines |
+| **Word — exam with answer key** | `.docx` | Same as exam ready but correct answers are marked — suitable for a separate marker's copy |
+| **Word — exam full metadata** | `.docx` | Randomised question order with full metadata (type, difficulty, points, tags) included |
+| **Word — exam ready, page order** | `.docx` | Same clean exam format as *exam ready* but questions appear in the exact order shown on the assessment edit page — no shuffling of questions or options. Useful for reading copies, accessibility versions, or when the original sequencing is intentional |
 
 Each export fetches full question data via GraphQL, including prompt text, answer details, feedback, difficulty, points, tags, and shuffle settings. Word exports use the [docx](https://github.com/dolanmiu/docx) library (bundled locally) and prevent questions from splitting across pages. Progress is shown in the log panel during export.
 
@@ -223,22 +228,16 @@ The QTI export produces Blackboard-flavoured QTI 1.2 XML that can be re-imported
 
 ### Assessment Export
 
-The Export tab also works on **assessment edit pages** (`/task/.../edit/...`). When the plugin detects an assessment edit page, it reads questions directly from the Apollo cache — no API fetches required — and offers a single export option: **Word — exam ready**.
+The Export tab also works on **assessment edit pages** (`/task/.../edit/...`). When the plugin detects an assessment edit page, it reads questions directly from the Apollo cache — no API fetches required — and restricts the format selector to the five exam-ready Word variants.
 
-This produces a clean, student-facing Word document with:
-- All questions from the assessment, randomised
-- No metadata, correct answer markers, or explanations
-- MCQ choices listed without checkmarks
-- Matching prompts and answers shown as two columns (answers shuffled)
-- FIB blanks shown as `___` with no answers
-- Short answer questions followed by blank lines
+Question order is determined by reading the rendered page DOM, not the Apollo cache block array (which may be stale from earlier analytics or grading page visits). This ensures the exported document always matches the visual sequence on screen, including correct section boundaries.
 
 The plugin auto-detects which Cadmus page you are on and shows only the relevant tabs:
 
 | Page | URL pattern | Tabs shown |
 |------|-------------|------------|
 | **Question Library** | `/assessment/{id}/library` | Import, Bulk Edit, Export, Delete |
-| **Assessment Edit** | `/assessment/{id}/task/{id}/edit/...` | Export (exam-ready Word only) |
+| **Assessment Edit** | `/assessment/{id}/task/{id}/edit/...` | Export (exam-ready Word variants only) |
 | **Marking** | `/assessment/{id}/class/marking` | Report, Grading, Analysis |
 | **Moderation** | `/assessment/{id}/grader/moderate/...` | Report, Analysis |
 | **Learning Assurance** | `/assessment/{id}/learning-assurance` | Report, Analysis |
@@ -293,6 +292,50 @@ All analysis reports share a common data extraction and model-building pipeline:
 1. **`loadAnalysisData()`** — executes in the page context (`world: 'MAIN'`) to read the Apollo cache. Extracts slim versions of 14 entity types (User, Enrollment, AccessCode, WorkOutcome, QuestionOutcome, Question, QuestionTag, Work, Submission, WorkSettings, AssessmentSettings, etc.).
 2. **`buildAnalysisModel(raw)`** — runs in the popup context. Builds relationship maps (user→enrollment→work→outcome→question) and computes derived fields: tute group membership, deferred status, exam duration, Bloom's level, week/topic tags, difficulty validation.
 3. **Individual renderers** — each report function receives the processed model and renders a combination of HTML tables (`analysis-table` class) and canvas-based charts. All charts include a "Copy chart" button.
+
+### Grading Audit
+
+The **Grading** tab is available on the **Marking** page. It is split into two independent sub-tabs, each with its own Load Data flow:
+
+#### BLANKS sub-tab
+
+Audits Fill-in-Blank partial scoring. Load Data reads all student responses from the Apollo cache and flags fields where a student supplied a correct answer but was scored below 1 due to partial scoring configuration.
+
+- **Summary panel** — shows student count, question count, field count, and number of penalised fields
+- **Dry Run toggle** — when on, the fix export shows what would change without applying it
+- **Export Blanks CSV** — downloads a per-field audit table with student ID, question ID, field identifier, student answer, correct values, and current score
+- **Export Fixed CSV** — (visible after review) downloads the corrected score rows
+
+#### SHORT Answers sub-tab
+
+Supports human-in-the-loop and AI-assisted review of Short Answer responses.
+
+- **Model answer mapping table** — lists all SHORT questions in the assessment with their configured expected answers, flagging any missing model answers
+- **Evaluate with AI** — sends all student responses to the detected LLM service (see Settings below) for automated scoring. Each question is evaluated in a single batched call; the LLM returns a score (0–1), a flag (correct / partial / incorrect / skip), and a brief justification for each student
+- **Export SHORT CSV** — downloads a per-response table including `LLMScore`, `LLMFlag`, and `LLMJustification` columns alongside the raw student answer and model answer
+
+### Settings
+
+The gear icon (⚙) in the top-right of the tab bar opens the **Settings** panel, which is available on all page contexts.
+
+#### AI Evaluation Providers
+
+Three provider blocks — Claude, ChatGPT, and Gemini — each showing:
+
+- **Session status** — whether an active browser session is detected for that provider (checked automatically on popup open)
+- **Check session** button — re-runs session detection for that provider
+- **API key input** — optional fallback; if no browser session is found, the stored API key is used instead via the official API
+
+Provider priority: Claude.ai browser session → ChatGPT browser session → Gemini browser session → Claude API key → ChatGPT API key → Gemini API key. The first available path is used for evaluation.
+
+Session detection uses `credentials: 'include'` fetch calls — no tokens are extracted or stored. API keys are saved in `chrome.storage.local` and never transmitted except to the provider's own API endpoint.
+
+#### Grading Defaults
+
+- **Dry Run on by default** — controls the initial state of the Dry Run toggle on the BLANKS sub-tab
+- **SHORT similarity threshold default** — sets the initial value of the similarity slider used when loading SHORT answer data
+
+Both values persist across sessions.
 
 ### Bulk Edit
 
@@ -442,6 +485,8 @@ After making changes to the source files:
 - **docx** — [dolanmiu/docx](https://github.com/dolanmiu/docx) v9.6.1, bundled locally for Word document generation with `keepNext` pagination control
 - **Multi-format export** — Excel via SheetJS, Word via docx, CSV/JSON/QTI XML via string builders; all formats use Blob + hidden anchor download
 - **Apollo cache extraction** — assessment edit pages have fully hydrated question data in the Apollo cache; the plugin reads it directly without API fetches
+- **DOM-based question ordering** — the Apollo cache block array order is not reliable (overwritten by whichever query ran last); the extension recovers display order by matching each question's full text against `document.body.innerText` using a word-by-word progressive fallback
+- **LLM session detection** — SHORT answer AI evaluation uses active browser sessions (`credentials: 'include'` fetch to provider-specific auth endpoints) so no API key is required when the user is already logged in to Claude.ai, ChatGPT, or Gemini; API keys stored in `chrome.storage.local` serve as fallback
 - **Context-aware UI** — detects library, marking, and assessment edit pages via strict URL matching anchored to `cadmus.io/{tenant}/assessment/{id}/...`; source tab ID stored in session storage for correct detection when popup opens as a separate window
 - **Matching data model** — Cadmus uses an inverted naming convention: `sourceSet` = answers (right side, `right_N`), `targetSet` = prompts (left side, `left_N`), `correctValues` = `"left_N right_N"` pairs
 - **Duplicate detection** — Jaccard word-overlap similarity (70% threshold) against TanStack table data; no extra API calls for the scan
