@@ -3400,7 +3400,11 @@ async function extractAssessmentQuestions() {
 
       const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-      // Step 1: collect ALL blocks (including SECTIONs) from cache — don't assign sections yet
+      // Build the full normalised page text once — innerText aggregates across inline
+      // formatting nodes so the full question text is always present as one continuous string.
+      const pageText = norm(document.body.innerText || document.body.textContent || '');
+
+      // Collect ALL blocks (including SECTIONs) — section assignment happens after sort.
       const allEntries = [];
       for (const bRef of task.blocks) {
         const block = cache[bRef.__ref];
@@ -3408,36 +3412,33 @@ async function extractAssessmentQuestions() {
         const q = block.question ? cache[block.question.__ref] : null;
         if (!q || q.questionType === 'OVERVIEW') continue;
         const tags = (q.tags || []).map(ref => cache[ref?.__ref]?.name).filter(Boolean);
-        const prompt = norm(extractDocText(q.body?.promptDoc) || q.shortPrompt || '');
-        allEntries.push({ q, block, tags, prompt });
+        // Use shortPrompt (plain text, no ProseMirror formatting) as primary key;
+        // fall back to extractDocText for questions that only have promptDoc.
+        const fullText = norm(q.shortPrompt || '') || norm(extractDocText(q.body?.promptDoc) || '');
+        allEntries.push({ q, block, tags, fullText });
       }
 
-      // Step 2: walk DOM text nodes in document order and record the first position
-      // at which each entry's prompt appears. Using TreeWalker on individual text nodes
-      // avoids false matches from navigation/sidebar text in other elements.
-      const domPositions = new Map(); // prompt → node index
-      let nodeIdx = 0;
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-      while (walker.nextNode()) {
-        const nodeText = norm(walker.currentNode.nodeValue || '');
-        if (nodeText.length >= 8) {
-          for (const entry of allEntries) {
-            if (domPositions.has(entry.prompt)) continue;
-            const needle = entry.prompt.slice(0, 35);
-            if (needle && nodeText.includes(needle)) domPositions.set(entry.prompt, nodeIdx);
-          }
+      // Find the first occurrence of each entry's full text in the page.
+      // Start with the complete string; if not found (minor rendering differences),
+      // progressively shorten from the end until a match is found or we give up.
+      const findPos = (text) => {
+        if (!text || text.length < 5) return Infinity;
+        let needle = text;
+        while (needle.length >= 20) {
+          const pos = pageText.indexOf(needle);
+          if (pos !== -1) return pos;
+          // Trim last word and retry
+          const cut = needle.lastIndexOf(' ');
+          if (cut <= 0) break;
+          needle = needle.slice(0, cut);
         }
-        nodeIdx++;
-      }
+        return Infinity;
+      };
 
-      // Step 3: sort by DOM position (entries not found stay at end)
-      allEntries.sort((a, b) => {
-        const pa = domPositions.has(a.prompt) ? domPositions.get(a.prompt) : Infinity;
-        const pb = domPositions.has(b.prompt) ? domPositions.get(b.prompt) : Infinity;
-        return pa - pb;
-      });
+      // Sort all entries (including SECTIONs) by page position.
+      allEntries.sort((a, b) => findPos(a.fullText) - findPos(b.fullText));
 
-      // Step 4: re-iterate in DOM order to assign sectionTitle/sectionIndex correctly
+      // Re-iterate in sorted order to assign sectionTitle/sectionIndex correctly.
       const questions = [];
       let sectionTitle = '';
       let sectionIndex = 0;
