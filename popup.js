@@ -3398,30 +3398,55 @@ async function extractAssessmentQuestions() {
         } catch (_) { return ''; }
       };
 
-      const questions = [];
-      let sectionTitle = '';
-      let sectionIndex = 0;
+      const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
+      // Step 1: collect ALL blocks (including SECTIONs) from cache — don't assign sections yet
+      const allEntries = [];
       for (const bRef of task.blocks) {
         const block = cache[bRef.__ref];
         if (!block || block.deleted || block.hidden) continue;
         const q = block.question ? cache[block.question.__ref] : null;
-        if (!q) continue;
+        if (!q || q.questionType === 'OVERVIEW') continue;
+        const tags = (q.tags || []).map(ref => cache[ref?.__ref]?.name).filter(Boolean);
+        const prompt = norm(extractDocText(q.body?.promptDoc) || q.shortPrompt || '');
+        allEntries.push({ q, block, tags, prompt });
+      }
 
-        if (q.questionType === 'OVERVIEW') continue;
+      // Step 2: walk DOM text nodes in document order and record the first position
+      // at which each entry's prompt appears. Using TreeWalker on individual text nodes
+      // avoids false matches from navigation/sidebar text in other elements.
+      const domPositions = new Map(); // prompt → node index
+      let nodeIdx = 0;
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+      while (walker.nextNode()) {
+        const nodeText = norm(walker.currentNode.nodeValue || '');
+        if (nodeText.length >= 8) {
+          for (const entry of allEntries) {
+            if (domPositions.has(entry.prompt)) continue;
+            const needle = entry.prompt.slice(0, 35);
+            if (needle && nodeText.includes(needle)) domPositions.set(entry.prompt, nodeIdx);
+          }
+        }
+        nodeIdx++;
+      }
 
+      // Step 3: sort by DOM position (entries not found stay at end)
+      allEntries.sort((a, b) => {
+        const pa = domPositions.has(a.prompt) ? domPositions.get(a.prompt) : Infinity;
+        const pb = domPositions.has(b.prompt) ? domPositions.get(b.prompt) : Infinity;
+        return pa - pb;
+      });
+
+      // Step 4: re-iterate in DOM order to assign sectionTitle/sectionIndex correctly
+      const questions = [];
+      let sectionTitle = '';
+      let sectionIndex = 0;
+      for (const { q, block, tags } of allEntries) {
         if (q.questionType === 'SECTION') {
           sectionIndex++;
-          sectionTitle = q.shortPrompt
-            || extractDocText(q.body?.promptDoc)
-            || `Part ${sectionIndex}`;
+          sectionTitle = q.shortPrompt || extractDocText(q.body?.promptDoc) || `Part ${sectionIndex}`;
           continue;
         }
-
-        // Resolve tag names from refs
-        const tags = (q.tags || [])
-          .map(ref => cache[ref?.__ref]?.name).filter(Boolean);
-
         questions.push({
           blockId: block.id,
           points: block.points ?? q.points,
@@ -3435,19 +3460,6 @@ async function extractAssessmentQuestions() {
           sectionIndex,
         });
       }
-
-      // Re-order questions to match visual DOM order.
-      // task.blocks array order in the Apollo cache is unreliable — it gets overwritten by
-      // whichever query ran last (grading, analytics, etc.). The page's rendered text is the
-      // only authoritative source of display order.
-      const pageText = (document.body.innerText || document.body.textContent || '').replace(/\s+/g, ' ');
-      const getPagePos = (q) => {
-        const txt = (extractDocText(q.body?.promptDoc) || q.shortPrompt || '').replace(/\s+/g, ' ').trim().slice(0, 40);
-        if (!txt) return Infinity;
-        const pos = pageText.indexOf(txt);
-        return pos === -1 ? Infinity : pos;
-      };
-      questions.sort((a, b) => getPagePos(a) - getPagePos(b));
 
       return { questions, assessmentName, source: window.location.href };
     },
