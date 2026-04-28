@@ -3221,7 +3221,8 @@ async function exportToDocx(data, { randomise = false, examReady = false, showAn
       if (examReady && !showAnswerKey) {
         // Exam mode: show prompts on left, shuffled answer pool on right (not paired)
         const prompts = q.pairs.map(p => p.left);
-        const answers = [...q.pairs.map(p => p.right)].sort(() => Math.random() - 0.5);
+        const answers = [...q.pairs.map(p => p.right)];
+        if (randomise) answers.sort(() => Math.random() - 0.5);
         const rowCount = Math.max(prompts.length, answers.length);
         const tRows = [];
         for (let ri = 0; ri < rowCount; ri++) {
@@ -4397,8 +4398,13 @@ document.addEventListener('click', (e) => {
               downloadFile(blob, `${baseName}_exam-full.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
               break;
             }
+            case 'docx-exam-read': {
+              const blob = await exportToDocx(data, { randomise: false, examReady: true });
+              downloadFile(blob, `${baseName}_exam-read.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+              break;
+            }
           }
-          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)', 'docx-exam-key': 'docx (exam + key)', 'docx-exam-full': 'docx (exam full)' };
+          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)', 'docx-exam-key': 'docx (exam + key)', 'docx-exam-full': 'docx (exam full)', 'docx-exam-read': 'docx (exam read)' };
           log(`Exported ${data.questions.length} question(s) as ${baseName}.${extMap[fmt] || fmt}`, 'ok');
         } catch (err) {
           log(`Export failed: ${err.message}`, 'err');
