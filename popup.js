@@ -3100,7 +3100,7 @@ ${items}
 </questestinterop>`;
 }
 
-async function exportToDocx(data, { randomise = false, examReady = false, showAnswerKey = false } = {}) {
+async function exportToDocx(data, { randomise = false, examReady = false, showAnswerKey = false, preserveOrder = false } = {}) {
   const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell,
     WidthType, BorderStyle, AlignmentType } = docx;
 
@@ -3120,10 +3120,12 @@ async function exportToDocx(data, { randomise = false, examReady = false, showAn
     .sort(([a], [b]) => a - b)
     .map(([, v]) => v);
 
-  // Within each section: shuffle or sort by type
+  // Within each section: shuffle, sort by type, or preserve original order
   const typeOrder = { MCQ: 0, MATCHING: 1, BLANKS: 2, SHORT: 3 };
   for (const sec of sections) {
-    if (randomise) {
+    if (preserveOrder) {
+      // keep Apollo cache / block order intact — no reordering
+    } else if (randomise) {
       for (let i = sec.questions.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [sec.questions[i], sec.questions[j]] = [sec.questions[j], sec.questions[i]];
@@ -3156,8 +3158,8 @@ async function exportToDocx(data, { randomise = false, examReady = false, showAn
     const q = sec.questions[qi];
     qNum++;
 
-    // Sub-heading when type changes (sorted/non-randomised mode, and either no sections or within a section)
-    if (!randomise && q.questionType !== currentType) {
+    // Sub-heading when type changes (sorted mode only — not when randomised or preserving order)
+    if (!randomise && !preserveOrder && q.questionType !== currentType) {
       currentType = q.questionType;
       if (!hasSections && qi > 0) {
         children.push(new Paragraph({ pageBreakBefore: true }));
@@ -4398,13 +4400,13 @@ document.addEventListener('click', (e) => {
               downloadFile(blob, `${baseName}_exam-full.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
               break;
             }
-            case 'docx-exam-read': {
-              const blob = await exportToDocx(data, { randomise: false, examReady: true });
-              downloadFile(blob, `${baseName}_exam-read.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+            case 'docx-exam-ready': {
+              const blob = await exportToDocx(data, { examReady: true, preserveOrder: true });
+              downloadFile(blob, `${baseName}_exam-ready.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
               break;
             }
           }
-          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)', 'docx-exam-key': 'docx (exam + key)', 'docx-exam-full': 'docx (exam full)', 'docx-exam-read': 'docx (exam read)' };
+          const extMap = { qti: 'xml', 'docx-sorted': 'docx (by type)', 'docx-random': 'docx (randomised)', 'docx-exam': 'docx (exam ready)', 'docx-exam-key': 'docx (exam + key)', 'docx-exam-full': 'docx (exam full)', 'docx-exam-ready': 'docx (exam ready, page order)' };
           log(`Exported ${data.questions.length} question(s) as ${baseName}.${extMap[fmt] || fmt}`, 'ok');
         } catch (err) {
           log(`Export failed: ${err.message}`, 'err');
