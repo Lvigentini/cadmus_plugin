@@ -3804,19 +3804,25 @@ async function detectLLMSession(stored = {}) {
     }
   } catch (_) {}
 
-  // 2. ChatGPT browser session
+  // 2. ChatGPT browser session — use the NextAuth session endpoint (same one used in API calls)
   try {
-    const r = await fetch('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', { credentials: 'include' });
+    const r = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' });
     if (r.ok) {
       const data = await r.json();
-      if (data?.account_plan || data?.accounts) return { service: 'chatgpt', label: 'ChatGPT (session)' };
+      if (data?.accessToken) return { service: 'chatgpt', label: 'ChatGPT (session)' };
     }
   } catch (_) {}
 
   // 3. Gemini browser session (presence check)
+  // Logged-in users are served the app on any gemini.google.com path;
+  // unauthenticated requests redirect to accounts.google.com.
   try {
     const r = await fetch('https://gemini.google.com/app', { credentials: 'include' });
-    if (r.ok && r.url.includes('gemini.google.com/app')) return { service: 'gemini', label: 'Gemini (session)' };
+    if (r.ok && r.url.startsWith('https://gemini.google.com')) {
+      // Session confirmed — store the fact but mark that a web-session call path is unavailable.
+      // Evaluation will use the API key if one is saved, or surface a clear message otherwise.
+      return { service: 'gemini', label: 'Gemini (session)', sessionOnly: true };
+    }
   } catch (_) {}
 
   // 4. Claude API key fallback
@@ -3857,18 +3863,28 @@ async function collectSSE(response) {
 async function callClaudeWeb(session, systemPrompt, userPrompt) {
   const base = `https://claude.ai/api/organizations/${session.orgId}`;
 
+  // Claude.ai web API enforces per-minute rate limits (429). Retry with backoff.
+  const fetchWithRetry = async (fn, label, maxAttempts = 4) => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const res = await fn();
+      if (res.status !== 429) return res;
+      if (attempt === maxAttempts) throw new Error(`Claude ${label}: rate limited — wait a minute or add an API key in ⚙ Settings`);
+      await new Promise(r => setTimeout(r, attempt * 3000)); // 3s, 6s, 9s
+    }
+  };
+
   // Create temporary conversation
-  const convRes = await fetch(`${base}/chat_conversations`, {
+  const convRes = await fetchWithRetry(() => fetch(`${base}/chat_conversations`, {
     method: 'POST', credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: '', uuid: crypto.randomUUID() }),
-  });
+  }), 'conv create');
   if (!convRes.ok) throw new Error(`Claude conv create: ${convRes.status}`);
   const conv = await convRes.json();
   const convId = conv.uuid;
 
   // Request completion (SSE)
-  const compRes = await fetch(`${base}/chat_conversations/${convId}/completion`, {
+  const compRes = await fetchWithRetry(() => fetch(`${base}/chat_conversations/${convId}/completion`, {
     method: 'POST', credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -3877,7 +3893,7 @@ async function callClaudeWeb(session, systemPrompt, userPrompt) {
       model: 'claude-haiku-4-5',
       attachments: [], files: [],
     }),
-  });
+  }), 'completion');
   if (!compRes.ok) throw new Error(`Claude completion: ${compRes.status}`);
   const text = await collectSSE(compRes);
 
@@ -3971,7 +3987,11 @@ async function callLLMEvaluate(session, systemPrompt, userPrompt) {
   // Browser session paths (internal web APIs with SSE)
   if (session.service === 'claude') return callClaudeWeb(session, systemPrompt, userPrompt);
   if (session.service === 'chatgpt') return callChatGPTWeb(systemPrompt, userPrompt);
-  throw new Error('Gemini session evaluation not yet implemented — add a Gemini API key in ⚙ Settings');
+  // Gemini web session detected but internal RPC requires a complex token extraction —
+  // require an API key from Google AI Studio for evaluation.
+  if (session.service === 'gemini')
+    throw new Error('Gemini session detected but web API is not supported — add a Gemini API key from Google AI Studio in ⚙ Settings');
+  throw new Error('No supported LLM session or API key found');
 }
 
 // ── Wire up buttons ──────────────────────────────────────────────────────────
