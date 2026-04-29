@@ -3857,12 +3857,12 @@ async function detectClaudeSession(stored = {}) {
     }
   } catch (_) {}
 
-  // Cookie fallback — any session cookie on claude.ai means logged in (orgId fetched at eval time)
+  // Cookie fallback — sessionKey on claude.ai means logged in (orgId fetched at eval time via tab)
   try {
     const cookies = await chrome.cookies.getAll({ domain: 'claude.ai' });
-    console.log('[LLM detect] claude.ai cookies:', cookies.map(c => c.name).join(', ') || '(none)');
-    const hasSession = cookies.some(c => /session|auth|aktosSessionId/i.test(c.name));
-    if (hasSession) return { service: 'claude', label: 'Claude.ai (session — open claude.ai tab)', sessionNeedsTab: true };
+    if (cookies.some(c => c.name === 'sessionKey' || c.name === 'sessionKeyLC')) {
+      return { service: 'claude', label: 'Claude.ai (session — open claude.ai tab)', sessionNeedsTab: true };
+    }
   } catch (_) {}
 
   if (stored.claudeApiKey) return { service: 'claude', label: 'Claude (API key)', apiKey: stored.claudeApiKey };
@@ -3870,19 +3870,19 @@ async function detectClaudeSession(stored = {}) {
 }
 
 async function detectChatGPTSession(stored = {}) {
-  try {
-    const c = await chrome.cookies.get({ url: 'https://chatgpt.com', name: '__Secure-next-auth.session-token' });
-    if (c?.value) return { service: 'chatgpt', label: 'ChatGPT (session)' };
-  } catch (_) {}
-  try {
-    const c = await chrome.cookies.get({ url: 'https://chatgpt.com', name: 'next-auth.session-token' });
-    if (c?.value) return { service: 'chatgpt', label: 'ChatGPT (session)' };
-  } catch (_) {}
-  // Log all chatgpt.com cookies for diagnosis
-  try {
-    const all = await chrome.cookies.getAll({ domain: 'chatgpt.com' });
-    console.log('[LLM detect] chatgpt.com cookies:', all.map(c => c.name).join(', ') || '(none)');
-  } catch (e) { console.warn('[LLM detect] chatgpt getAll error:', e.message); }
+  // NextAuth splits large JWTs across .0, .1, ... chunks — check all variants
+  const tokenNames = [
+    '__Secure-next-auth.session-token',
+    '__Secure-next-auth.session-token.0',
+    'next-auth.session-token',
+    'next-auth.session-token.0',
+  ];
+  for (const name of tokenNames) {
+    try {
+      const c = await chrome.cookies.get({ url: 'https://chatgpt.com', name });
+      if (c?.value) return { service: 'chatgpt', label: 'ChatGPT (session)' };
+    } catch (_) {}
+  }
   if (stored.chatgptApiKey) return { service: 'chatgpt', label: 'ChatGPT (API key)', apiKey: stored.chatgptApiKey };
   return null;
 }
