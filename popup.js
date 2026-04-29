@@ -9,6 +9,7 @@ const log = (msg, cls = '') => {
   el.appendChild(line);
   el.scrollTop = el.scrollHeight;
 };
+const logError = (msg) => log(msg, 'err');
 
 // ── Version check ───────────────────────────────────────────────────────────
 async function checkForUpdate() {
@@ -3833,14 +3834,37 @@ const isToggleOn = (id) => document.getElementById(id)?.classList.contains('acti
 // ── LLM session helpers ───────────────────────────────────────────────────────
 
 async function detectClaudeSession(stored = {}) {
+  // Anthropic blocks cross-origin fetches from chrome-extension:// — use tab injection if available
   try {
-    const r = await fetch('https://claude.ai/api/organizations', { credentials: 'include' });
-    if (r.ok) {
-      const orgs = await r.json();
-      const orgId = Array.isArray(orgs) ? orgs[0]?.uuid : orgs?.uuid;
+    const tabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+    if (tabs.length) {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tabs[0].id },
+        func: async () => {
+          try {
+            const r = await fetch('/api/organizations');
+            if (r.ok) {
+              const orgs = await r.json();
+              const orgId = Array.isArray(orgs) ? orgs[0]?.uuid : orgs?.uuid;
+              return orgId ? { orgId } : null;
+            }
+          } catch (_) {}
+          return null;
+        },
+      });
+      const orgId = results?.[0]?.result?.orgId;
       if (orgId) return { service: 'claude', label: 'Claude.ai (session)', orgId };
     }
   } catch (_) {}
+
+  // Cookie fallback — any session cookie on claude.ai means logged in (orgId fetched at eval time)
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: 'claude.ai' });
+    console.log('[LLM detect] claude.ai cookies:', cookies.map(c => c.name).join(', ') || '(none)');
+    const hasSession = cookies.some(c => /session|auth|aktosSessionId/i.test(c.name));
+    if (hasSession) return { service: 'claude', label: 'Claude.ai (session — open claude.ai tab)', sessionNeedsTab: true };
+  } catch (_) {}
+
   if (stored.claudeApiKey) return { service: 'claude', label: 'Claude (API key)', apiKey: stored.claudeApiKey };
   return null;
 }
@@ -3854,6 +3878,11 @@ async function detectChatGPTSession(stored = {}) {
     const c = await chrome.cookies.get({ url: 'https://chatgpt.com', name: 'next-auth.session-token' });
     if (c?.value) return { service: 'chatgpt', label: 'ChatGPT (session)' };
   } catch (_) {}
+  // Log all chatgpt.com cookies for diagnosis
+  try {
+    const all = await chrome.cookies.getAll({ domain: 'chatgpt.com' });
+    console.log('[LLM detect] chatgpt.com cookies:', all.map(c => c.name).join(', ') || '(none)');
+  } catch (e) { console.warn('[LLM detect] chatgpt getAll error:', e.message); }
   if (stored.chatgptApiKey) return { service: 'chatgpt', label: 'ChatGPT (API key)', apiKey: stored.chatgptApiKey };
   return null;
 }
@@ -3900,45 +3929,87 @@ async function collectSSE(response) {
 }
 
 async function callClaudeWeb(session, systemPrompt, userPrompt) {
-  const base = `https://claude.ai/api/organizations/${session.orgId}`;
+  // Claude.ai blocks cross-origin fetches from chrome-extension:// — run inside a claude.ai tab
+  const tabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+  if (!tabs.length) throw new Error('Claude.ai requires an open claude.ai tab — open one (logged in) and try again');
 
-  // Claude.ai web API enforces per-minute rate limits (429). Retry with backoff.
-  const fetchWithRetry = async (fn, label, maxAttempts = 4) => {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const res = await fn();
-      if (res.status !== 429) return res;
-      if (attempt === maxAttempts) throw new Error(`Claude ${label}: rate limited — wait a minute or add an API key in ⚙ Settings`);
-      await new Promise(r => setTimeout(r, attempt * 3000)); // 3s, 6s, 9s
-    }
-  };
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tabs[0].id },
+    func: async (sysPrompt, usrPrompt) => {
+      try {
+        // Get orgId from same-origin API
+        const orgRes = await fetch('/api/organizations');
+        if (!orgRes.ok) return { error: `Claude orgs: ${orgRes.status}` };
+        const orgs = await orgRes.json();
+        const orgId = Array.isArray(orgs) ? orgs[0]?.uuid : orgs?.uuid;
+        if (!orgId) return { error: 'No Claude org found — are you logged in at claude.ai?' };
 
-  // Create temporary conversation
-  const convRes = await fetchWithRetry(() => fetch(`${base}/chat_conversations`, {
-    method: 'POST', credentials: 'include',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: '', uuid: crypto.randomUUID() }),
-  }), 'conv create');
-  if (!convRes.ok) throw new Error(`Claude conv create: ${convRes.status}`);
-  const conv = await convRes.json();
-  const convId = conv.uuid;
+        const base = `/api/organizations/${orgId}`;
 
-  // Request completion (SSE)
-  const compRes = await fetchWithRetry(() => fetch(`${base}/chat_conversations/${convId}/completion`, {
-    method: 'POST', credentials: 'include',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      prompt: `\n\nHuman: [System: ${systemPrompt}]\n\n${userPrompt}\n\nAssistant:`,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      model: 'claude-haiku-4-5',
-      attachments: [], files: [],
-    }),
-  }), 'completion');
-  if (!compRes.ok) throw new Error(`Claude completion: ${compRes.status}`);
-  const text = await collectSSE(compRes);
+        // Retry helper for 429 rate limits
+        const tryFetch = async (fn, label) => {
+          for (let i = 1; i <= 4; i++) {
+            const r = await fn();
+            if (r.status !== 429) return r;
+            if (i === 4) return r;
+            await new Promise(ok => setTimeout(ok, i * 3000));
+          }
+        };
 
-  // Cleanup: delete temp conversation (best-effort)
-  fetch(`${base}/chat_conversations/${convId}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
-  return text;
+        // Create temp conversation
+        const convRes = await tryFetch(() => fetch(`${base}/chat_conversations`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: '', uuid: crypto.randomUUID() }),
+        }), 'conv');
+        if (!convRes.ok) return { error: `Claude conv create: ${convRes.status}` };
+        const convId = (await convRes.json()).uuid;
+
+        // Stream completion
+        const compRes = await tryFetch(() => fetch(`${base}/chat_conversations/${convId}/completion`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            prompt: `\n\nHuman: [System: ${sysPrompt}]\n\n${usrPrompt}\n\nAssistant:`,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            model: 'claude-haiku-4-5',
+            attachments: [], files: [],
+          }),
+        }), 'completion');
+        if (!compRes.ok) return { error: `Claude completion: ${compRes.status}` };
+
+        // Collect SSE
+        const reader = compRes.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            const raw = line.slice(6).trim();
+            if (raw === '[DONE]') continue;
+            try {
+              const ev = JSON.parse(raw);
+              fullText += ev.completion ?? ev.delta?.text ?? '';
+            } catch (_) {}
+          }
+        }
+
+        // Cleanup (best-effort)
+        fetch(`${base}/chat_conversations/${convId}`, { method: 'DELETE' }).catch(() => {});
+        return { text: fullText };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    args: [systemPrompt, userPrompt],
+  });
+
+  const result = results?.[0]?.result;
+  if (!result) throw new Error('Claude: no result from tab evaluation');
+  if (result.error) throw new Error(result.error);
+  return result.text;
 }
 
 async function callChatGPTWeb(systemPrompt, userPrompt) {
