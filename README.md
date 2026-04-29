@@ -308,11 +308,64 @@ Audits Fill-in-Blank partial scoring. Load Data reads all student responses from
 
 #### SHORT Answers sub-tab
 
-Supports human-in-the-loop and AI-assisted review of Short Answer responses.
+Supports human-in-the-loop, NLP-assisted, and AI-assisted review of Short Answer responses. Two independent evaluation paths produce complementary evidence — run either or both before exporting.
 
 - **Model answer mapping table** — lists all SHORT questions in the assessment with their configured expected answers, flagging any missing model answers
-- **Evaluate with AI** — sends all student responses to the detected LLM service (see Settings below) for automated scoring. Each question is evaluated in a single batched call; the LLM returns a score (0–1), a flag (correct / partial / incorrect / skip), and a brief justification for each student
-- **Export SHORT CSV** — downloads a per-response table including `LLMScore`, `LLMFlag`, and `LLMJustification` columns alongside the raw student answer and model answer
+
+- **Evaluate (NLP)** — runs four word-level scoring metrics entirely in the browser. No API calls, no credentials required, instant for any cohort size. Results are written into the page state immediately and appear in the next export:
+
+  | Column | What it measures |
+  |--------|-----------------|
+  | `NLPJaccard` | Overlap between student and model answer token sets (0–100 %) |
+  | `NLPCoverage` | Fraction of model answer tokens present in the student response (0–100 %) |
+  | `NLPEchoScore` | Fraction of student tokens that also appear in the question prompt — high values suggest question-parroting (0–100 %) |
+  | `NLPLengthRatio` | Student response length ÷ model answer length, capped at 2.0 |
+
+- **Evaluate with AI** — sends all student responses to the configured LLM provider (see Settings below) for automated scoring. Evaluation proceeds one question at a time (all students for a question in a single batched call) to respect API rate limits. The LLM returns a score, a flag, and a brief justification per student:
+
+  | LLMFlag | Meaning |
+  |---------|---------|
+  | `CORRECT` | Full or near-full understanding demonstrated |
+  | `PARTIAL` | Some substance but significant gaps |
+  | `INCORRECT` | Wrong, off-topic, or does not address the question |
+  | `ECHO` | Student reproduced the question wording without adding substance |
+  | `SKIP` | Response was blank or too short to evaluate |
+  | `ERROR` | LLM call failed for this response |
+
+  The LLM is given the question's max score and returns a value on that scale in quarter-point steps (e.g. 0, 0.5, 1, 1.5, 2 for a 2-point question). `LLMScore` and `FieldScore` are directly comparable — no conversion needed.
+
+  **Stop and resume** — while evaluation is running the button label changes to **Stop**. Clicking it halts after the current question completes; partial results are already written into the page state and are preserved. Clicking **Evaluate with AI** again resumes from where it left off, skipping any questions that already have results.
+
+  **Restore from a previous export** — the file input beneath the AI button accepts a previously exported SHORT CSV. The extension reads the LLM columns (`LLMScore`, `LLMFlag`, `LLMJustification`) and NLP columns from the file and writes them back, matched by `FieldOutcomeId`. This lets you pick up where you left off after closing the browser, or continue a run from a colleague's partial export.
+
+- **Export SHORT answers** — downloads a per-response CSV. The button label updates dynamically to indicate which evaluation data is included:
+  - **"Export SHORT answers"** — before any evaluation
+  - **"Export SHORT answers — with NLP scores"** — after NLP only
+  - **"Export SHORT answers — with AI results"** — after AI evaluation only
+  - **"Export SHORT answers — with NLP + AI results"** — after both
+
+  | Column | Source | Description |
+  |--------|--------|-------------|
+  | `StudentName` | Cadmus | Student display name |
+  | `StudentID` | Cadmus | Cadmus student identifier |
+  | `StudentEmail` | Cadmus | Student email address |
+  | `QuestionNo` | Cadmus | Question number within the assessment |
+  | `QuestionID` | Cadmus | Cadmus question identifier |
+  | `QuestionPrompt` | Cadmus | Full question text |
+  | `ExpectedAnswer` | Cadmus | Model answer configured in Cadmus |
+  | `StudentAnswer` | Cadmus | Student's submitted response |
+  | `AnswerSimilarity` | Cadmus | Cadmus's own string-similarity score, rounded to an integer percentage (0–100) |
+  | `AutomarkScore` | Cadmus | Score assigned by the Cadmus automarker |
+  | `NLPJaccard` | NLP evaluator | Token-overlap Jaccard similarity (0–100) |
+  | `NLPCoverage` | NLP evaluator | Model answer token coverage (0–100) |
+  | `NLPEchoScore` | NLP evaluator | Question-echo ratio — fraction of student tokens from the prompt (0–100) |
+  | `NLPLengthRatio` | NLP evaluator | Response length relative to model answer, capped at 2.0 |
+  | `LLMScore` | AI evaluator | Score in the question's own point scale using quarter steps — directly comparable to `FieldScore` |
+  | `LLMFlag` | AI evaluator | CORRECT / PARTIAL / INCORRECT / ECHO / SKIP / ERROR |
+  | `LLMJustification` | AI evaluator | Brief rationale from the LLM |
+  | `QuestionMaxScore` | Cadmus | Total points available for this question |
+  | `FieldScore` | Cadmus | Current grade the student receives for this field |
+  | `FieldOutcomeId` | Cadmus | Unique row identifier — used to match rows when restoring from a previous export |
 
 ### Settings
 
@@ -320,15 +373,20 @@ The gear icon (⚙) in the top-right of the tab bar opens the **Settings** panel
 
 #### AI Evaluation Providers
 
-Three provider blocks — Claude, ChatGPT, and Gemini — each showing:
+The Settings panel shows three provider blocks — Claude, ChatGPT, and Gemini — plus an **Active provider** dropdown (Auto / Claude / ChatGPT / Gemini). Each block has two independent status indicators:
 
-- **Session status** — whether an active browser session is detected for that provider (checked automatically on popup open)
-- **Check session** button — re-runs session detection for that provider
-- **API key input** — optional fallback; if no browser session is found, the stored API key is used instead via the official API
+- **Session dot** — green when the extension detects an active login cookie for that provider. Detection uses the `chrome.cookies` API, which reads the browser cookie jar directly without extracting or transmitting cookie values. Cookies checked: `sessionKey` / `sessionKeyLC` for Claude.ai; `__Secure-next-auth.session-token` (including chunked variants `.0`, `.1`) for ChatGPT; `SAPISID` for Gemini.
+- **API key dot** — green when a key has been saved. Keys are stored in `chrome.storage.local` and are never transmitted except to the provider's own API endpoint.
 
-Provider priority: Claude.ai browser session → ChatGPT browser session → Gemini browser session → Claude API key → ChatGPT API key → Gemini API key. The first available path is used for evaluation.
+**Evaluation paths per provider:**
 
-Session detection uses `credentials: 'include'` fetch calls — no tokens are extracted or stored. API keys are saved in `chrome.storage.local` and never transmitted except to the provider's own API endpoint.
+| Provider | Session path | API key path | Notes |
+|----------|-------------|--------------|-------|
+| **Claude** | Tab injection into an open `claude.ai` tab — evaluation runs in the tab's own page context where session cookies work normally | Direct call to `api.anthropic.com` | Requires an open, logged-in claude.ai tab when using the session path |
+| **ChatGPT** | Not supported — web interface uses Cloudflare Turnstile bot detection | Direct call to `api.openai.com` | API key required; session indicator shows login status only |
+| **Gemini** | Not supported — Google's internal API format is significantly more complex | Direct call to `generativelanguage.googleapis.com` | Free API key available at `aistudio.google.com`; free tier is rate-limited to 5 req/min — the extension handles this automatically with sequential evaluation and retry logic that reads the exact wait time from the API error response |
+
+When set to **Auto**, the extension uses the first available path in this order: Claude session → Claude API key → ChatGPT API key → Gemini API key. Selecting a specific provider in the dropdown overrides this.
 
 #### Grading Defaults
 
@@ -486,7 +544,7 @@ After making changes to the source files:
 - **Multi-format export** — Excel via SheetJS, Word via docx, CSV/JSON/QTI XML via string builders; all formats use Blob + hidden anchor download
 - **Apollo cache extraction** — assessment edit pages have fully hydrated question data in the Apollo cache; the plugin reads it directly without API fetches
 - **DOM-based question ordering** — the Apollo cache block array order is not reliable (overwritten by whichever query ran last); the extension recovers display order by matching each question's full text against `document.body.innerText` using a word-by-word progressive fallback
-- **LLM session detection** — SHORT answer AI evaluation uses active browser sessions (`credentials: 'include'` fetch to provider-specific auth endpoints) so no API key is required when the user is already logged in to Claude.ai, ChatGPT, or Gemini; API keys stored in `chrome.storage.local` serve as fallback
+- **LLM session detection** — uses `chrome.cookies` API to read the browser cookie jar directly, bypassing the SameSite=Lax restriction that blocks cross-origin fetches from the `chrome-extension://` origin. Claude evaluation runs via `chrome.scripting.executeScript` inside an open claude.ai tab (same-origin context); ChatGPT and Gemini require an API key because their web interfaces use bot detection or internal APIs too complex to replicate. API keys are stored in `chrome.storage.local` and never leave the browser except to each provider's own endpoint
 - **Context-aware UI** — detects library, marking, and assessment edit pages via strict URL matching anchored to `cadmus.io/{tenant}/assessment/{id}/...`; source tab ID stored in session storage for correct detection when popup opens as a separate window
 - **Matching data model** — Cadmus uses an inverted naming convention: `sourceSet` = answers (right side, `right_N`), `targetSet` = prompts (left side, `left_N`), `correctValues` = `"left_N right_N"` pairs
 - **Duplicate detection** — Jaccard word-overlap similarity (70% threshold) against TanStack table data; no extra API calls for the scan
