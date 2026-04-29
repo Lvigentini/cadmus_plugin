@@ -3660,9 +3660,15 @@ async function checkAndUpdateProvider(provider) {
     statusEl.style.color = session ? '#2e7d32' : '#c62828';
   }
 
-  // If this is the preferred provider, update the active session
+  // Update active session respecting preference
   const preferred = stored.preferredProvider || 'auto';
-  if (preferred === provider || preferred === 'auto') updateLLMSessionUI(session);
+  if (preferred === provider) {
+    updateLLMSessionUI(session);
+  } else if (preferred === 'auto') {
+    // Re-detect all so auto-priority (claude > chatgpt > gemini) is respected
+    const allSessions = await detectAllSessions(stored);
+    updateLLMSessionUI(allSessions.claude || allSessions.chatgpt || allSessions.gemini);
+  }
 }
 
 ['claude', 'chatgpt', 'gemini'].forEach(prov => {
@@ -3853,7 +3859,11 @@ async function detectClaudeSession(stored = {}) {
         },
       });
       const orgId = results?.[0]?.result?.orgId;
-      if (orgId) return { service: 'claude', label: 'Claude.ai (session)', orgId };
+      if (orgId) {
+        const s = { service: 'claude', label: 'Claude.ai (session)', orgId };
+        if (stored.claudeApiKey) { s.apiKey = stored.claudeApiKey; s.label += ' + key'; }
+        return s;
+      }
     }
   } catch (_) {}
 
@@ -3861,7 +3871,9 @@ async function detectClaudeSession(stored = {}) {
   try {
     const cookies = await chrome.cookies.getAll({ domain: 'claude.ai' });
     if (cookies.some(c => c.name === 'sessionKey' || c.name === 'sessionKeyLC')) {
-      return { service: 'claude', label: 'Claude.ai (session — open claude.ai tab)', sessionNeedsTab: true };
+      const s = { service: 'claude', label: 'Claude.ai (session — open claude.ai tab)', sessionNeedsTab: true };
+      if (stored.claudeApiKey) { s.apiKey = stored.claudeApiKey; s.label += ' + key'; }
+      return s;
     }
   } catch (_) {}
 
@@ -3880,7 +3892,11 @@ async function detectChatGPTSession(stored = {}) {
   for (const name of tokenNames) {
     try {
       const c = await chrome.cookies.get({ url: 'https://chatgpt.com', name });
-      if (c?.value) return { service: 'chatgpt', label: 'ChatGPT (session)' };
+      if (c?.value) {
+        const s = { service: 'chatgpt', label: 'ChatGPT (session)' };
+        if (stored.chatgptApiKey) { s.apiKey = stored.chatgptApiKey; s.label += ' + key'; }
+        return s;
+      }
     } catch (_) {}
   }
   if (stored.chatgptApiKey) return { service: 'chatgpt', label: 'ChatGPT (API key)', apiKey: stored.chatgptApiKey };
@@ -3890,7 +3906,11 @@ async function detectChatGPTSession(stored = {}) {
 async function detectGeminiSession(stored = {}) {
   try {
     const c = await chrome.cookies.get({ url: 'https://gemini.google.com', name: 'SAPISID' });
-    if (c?.value) return { service: 'gemini', label: 'Gemini (session)', sessionOnly: true };
+    if (c?.value) {
+      const s = { service: 'gemini', label: 'Gemini (session)', sessionOnly: true };
+      if (stored.geminiApiKey) { s.apiKey = stored.geminiApiKey; s.label += ' + key'; }
+      return s;
+    }
   } catch (_) {}
   if (stored.geminiApiKey) return { service: 'gemini', label: 'Gemini (API key)', apiKey: stored.geminiApiKey };
   return null;
