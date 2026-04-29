@@ -455,6 +455,17 @@
           <p class="grading-step-label" style="margin-bottom:4px">AI Evaluation Providers</p>
           <p class="fix-hint" style="margin-bottom:12px">Used for SHORT answer AI evaluation. Browser session is preferred (no cost, no key needed). Enter an API key as fallback if not logged in.</p>
 
+          <!-- Active provider selector -->
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 10px;background:#f0f4ff;border:1px solid #c5d5f5;border-radius:6px">
+            <span style="font-size:12px;font-weight:600;color:#333;white-space:nowrap">Active provider</span>
+            <select id="settings-preferred-provider" style="font-size:12px;padding:4px 8px;border:1px solid #ccc;border-radius:4px;flex:1">
+              <option value="auto">Auto (first available)</option>
+              <option value="claude">Claude (Anthropic)</option>
+              <option value="chatgpt">ChatGPT (OpenAI)</option>
+              <option value="gemini">Gemini (Google)</option>
+            </select>
+          </div>
+
           <!-- Claude (Anthropic) -->
           <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px;margin-bottom:10px">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
