@@ -4012,100 +4012,6 @@ async function callClaudeWeb(session, systemPrompt, userPrompt) {
   return result.text;
 }
 
-async function callChatGPTWeb(systemPrompt, userPrompt) {
-  // SameSite=Lax blocks cross-origin fetch from chrome-extension:// origin, so credentials are
-  // never sent. Run the full evaluation inside an open chatgpt.com tab where all fetches are
-  // same-origin and cookies work normally.
-  const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
-  if (!tabs.length) throw new Error('ChatGPT requires an open chatgpt.com tab — open one (logged in) and try again');
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tabs[0].id },
-    func: async (sysPrompt, usrPrompt) => {
-      try {
-        // Bearer token (same-origin — cookies sent normally)
-        const sessRes = await fetch('/api/auth/session');
-        if (!sessRes.ok) return { error: `ChatGPT session: ${sessRes.status}` };
-        const sessData = await sessRes.json();
-        const accessToken = sessData?.accessToken;
-        if (!accessToken) return { error: 'No accessToken — please log into chatgpt.com' };
-        const auth = { 'Authorization': `Bearer ${accessToken}` };
-
-        // Sentinel token (bot-detection pre-flight)
-        let sentinelHeaders = {};
-        const sentRes = await fetch('/backend-api/sentinel/chat-requirements', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...auth },
-          body: JSON.stringify({ conversation_id: null, messages: [{ author: { role: 'user' }, content: { content_type: 'text', parts: [usrPrompt.slice(0, 100)] } }] }),
-        });
-        if (sentRes.ok) {
-          const req = await sentRes.json();
-          if (req.turnstile?.required || req.arkose?.required)
-            return { error: 'ChatGPT requires CAPTCHA — add a ChatGPT API key in ⚙ Settings instead' };
-          if (req.token) sentinelHeaders['Openai-Sentinel-Chat-Requirements-Token'] = req.token;
-        }
-
-        // Conversation
-        const convRes = await fetch('/backend-api/conversation', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...auth, ...sentinelHeaders },
-          body: JSON.stringify({
-            action: 'next',
-            messages: [
-              { id: crypto.randomUUID(), author: { role: 'system' }, content: { content_type: 'text', parts: [sysPrompt] } },
-              { id: crypto.randomUUID(), author: { role: 'user' }, content: { content_type: 'text', parts: [usrPrompt] } },
-            ],
-            model: 'gpt-4o-mini',
-            parent_message_id: crypto.randomUUID(),
-            timezone_offset_min: new Date().getTimezoneOffset(),
-            conversation_mode: { kind: 'primary_assistant' },
-          }),
-        });
-        if (!convRes.ok) return { error: `ChatGPT conversation: ${convRes.status}` };
-
-        // Collect SSE — ChatGPT sends the full accumulated text in each event (not deltas)
-        const reader = convRes.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        let conversationId = null;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          for (const line of decoder.decode(value, { stream: true }).split('\n')) {
-            if (!line.startsWith('data: ')) continue;
-            const raw = line.slice(6).trim();
-            if (raw === '[DONE]') continue;
-            try {
-              const ev = JSON.parse(raw);
-              const part = ev.message?.content?.parts?.[0];
-              if (typeof part === 'string') fullText = part;
-              if (ev.conversation_id) conversationId = ev.conversation_id;
-            } catch (_) {}
-          }
-        }
-
-        // Hide conversation from history (best-effort cleanup)
-        if (conversationId) {
-          fetch(`/backend-api/conversation/${conversationId}`, {
-            method: 'PATCH',
-            headers: { 'content-type': 'application/json', ...auth },
-            body: JSON.stringify({ is_visible: false }),
-          }).catch(() => {});
-        }
-
-        return { text: fullText };
-      } catch (e) {
-        return { error: e.message };
-      }
-    },
-    args: [systemPrompt, userPrompt],
-  });
-
-  const result = results?.[0]?.result;
-  if (!result) throw new Error('ChatGPT: no result from tab evaluation');
-  if (result.error) throw new Error(result.error);
-  return result.text;
-}
 
 async function callClaudeAPI(apiKey, systemPrompt, userPrompt) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -4141,19 +4047,20 @@ async function callGeminiAPI(apiKey, systemPrompt, userPrompt) {
 }
 
 async function callLLMEvaluate(session, systemPrompt, userPrompt) {
-  // API key paths (official APIs — no side effects, non-streaming)
+  // API key — always preferred, works for all providers
   if (session.apiKey) {
     if (session.service === 'claude') return callClaudeAPI(session.apiKey, systemPrompt, userPrompt);
     if (session.service === 'chatgpt') return callChatGPTAPI(session.apiKey, systemPrompt, userPrompt);
     if (session.service === 'gemini') return callGeminiAPI(session.apiKey, systemPrompt, userPrompt);
   }
-  // Browser session paths (internal web APIs with SSE)
+  // Claude browser session — tab injection works (same-origin, no bot detection)
   if (session.service === 'claude') return callClaudeWeb(session, systemPrompt, userPrompt);
-  if (session.service === 'chatgpt') return callChatGPTWeb(systemPrompt, userPrompt);
-  // Gemini web session detected but internal RPC requires a complex token extraction —
-  // require an API key from Google AI Studio for evaluation.
+  // ChatGPT and Gemini web APIs require bot-detection bypass that can't be automated —
+  // an API key is required for evaluation.
+  if (session.service === 'chatgpt')
+    throw new Error('ChatGPT evaluation requires an API key — add one in ⚙ Settings (get yours at platform.openai.com/api-keys)');
   if (session.service === 'gemini')
-    throw new Error('Gemini session detected but web API is not supported — add a Gemini API key from Google AI Studio in ⚙ Settings');
+    throw new Error('Gemini evaluation requires an API key — get a free one at aistudio.google.com and add it in ⚙ Settings');
   throw new Error('No supported LLM session or API key found');
 }
 
