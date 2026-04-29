@@ -4054,18 +4054,31 @@ async function callChatGPTAPI(apiKey, systemPrompt, userPrompt) {
   return data.choices?.[0]?.message?.content || '';
 }
 
-async function callGeminiAPI(apiKey, systemPrompt, userPrompt) {
-  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=' + apiKey, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-    }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+async function callGeminiAPI(apiKey, systemPrompt, userPrompt, maxAttempts = 5) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=' + apiKey, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+      }),
+    });
+    const data = await res.json();
+
+    if (res.status === 429 || data.error?.status === 'RESOURCE_EXHAUSTED') {
+      if (attempt === maxAttempts) throw new Error(data.error?.message || 'Gemini quota exceeded — retry later');
+      // Parse the suggested retry delay from the error message ("Please retry in 47.98s.")
+      const delayMatch = (data.error?.message || '').match(/retry in ([\d.]+)s/i);
+      const waitMs = delayMatch ? Math.ceil(parseFloat(delayMatch[1]) * 1000) + 500 : attempt * 12000;
+      log(`Gemini rate limit — waiting ${Math.round(waitMs / 1000)}s… (attempt ${attempt}/${maxAttempts})`, 'warn');
+      await new Promise(r => setTimeout(r, waitMs));
+      continue;
+    }
+
+    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  }
 }
 
 async function callLLMEvaluate(session, systemPrompt, userPrompt) {
@@ -4282,13 +4295,17 @@ document.addEventListener('click', (e) => {
           byQuestion[r.QuestionID].push({ idx, answer: r.StudentAnswer, outcomeId: r.FieldOutcomeId });
         });
 
-        log(`Evaluating ${shortRows.length} responses across ${Object.keys(byQuestion).length} questions in parallel…`);
+        const qCount = Object.keys(byQuestion).length;
+        log(`Evaluating ${shortRows.length} responses across ${qCount} question${qCount > 1 ? 's' : ''} (sequential — respects rate limits)…`);
 
         const SYSTEM = 'You are an academic assessor evaluating student short-answer responses. Be rigorous: a student who merely paraphrases or echoes the question without adding substantive knowledge scores low. Always provide a one-sentence justification.';
 
-        // 4. One parallel API call per question, all students bundled
+        // 4. One API call per question, sequential to stay within rate limits
         const results = {};
-        await Promise.all(Object.entries(byQuestion).map(async ([qid, entries]) => {
+        let qIdx = 0;
+        for (const [qid, entries] of Object.entries(byQuestion)) {
+          qIdx++;
+          log(`Evaluating question ${qIdx}/${qCount} (${entries.length} responses)…`);
           const q = questions[qid] || {};
           const numberedAnswers = entries.map((e, i) => `${i + 1}. ${e.answer || '(no answer)'}`).join('\n');
           const userPrompt = [
@@ -4323,7 +4340,7 @@ document.addEventListener('click', (e) => {
             });
             log(`Question ${qid.substring(0, 8)}… failed: ${err.message}`, 'err');
           }
-        }));
+        }
 
         // 5. Write results back into page context shortRows keyed by FieldOutcomeId
         await chrome.scripting.executeScript({
