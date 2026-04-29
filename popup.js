@@ -3582,13 +3582,6 @@ document.addEventListener('click', e => {
     });
   }
 
-  // Show API key saved status
-  const keyStatus = { claude: stored.claudeApiKey, chatgpt: stored.chatgptApiKey, gemini: stored.geminiApiKey };
-  Object.entries(keyStatus).forEach(([prov, key]) => {
-    const el = document.getElementById(`settings-${prov}-key-status`);
-    if (el) el.textContent = key ? 'API key saved' : '';
-  });
-
   // Detect all sessions in parallel and apply preferred provider
   const allSessions = await detectAllSessions(stored);
   const preferred = stored.preferredProvider || 'auto';
@@ -3596,13 +3589,13 @@ document.addEventListener('click', e => {
   const prefEl = document.getElementById('settings-preferred-provider');
   if (prefEl) prefEl.value = preferred;
 
+  const KEY_NAMES = { claude: 'claudeApiKey', chatgpt: 'chatgptApiKey', gemini: 'geminiApiKey' };
   ['claude', 'chatgpt', 'gemini'].forEach(prov => {
     const s = allSessions[prov];
-    const el = document.getElementById(`settings-${prov}-status`);
-    if (el) {
-      el.textContent = s ? `${s.label} ✓` : 'No session / key';
-      el.style.color = s ? '#2e7d32' : '#c62828';
-    }
+    const hasSession = !!(s?.sessionDetected);
+    const hasKey = !!stored[KEY_NAMES[prov]];
+    const sessionText = hasSession ? (s.sessionNeedsTab ? 'found (open tab)' : 'connected') : 'not detected';
+    setProviderDots(prov, hasSession, sessionText, hasKey);
   });
 
   const active = preferred === 'auto'
@@ -3646,8 +3639,7 @@ document.getElementById('settings-short-similarity')?.addEventListener('change',
 
 // Settings: provider check buttons
 async function checkAndUpdateProvider(provider) {
-  const statusEl = document.getElementById(`settings-${provider}-status`);
-  if (statusEl) { statusEl.textContent = 'Checking…'; statusEl.style.color = '#888'; }
+  setProviderDots(provider, false, 'checking…', false);
   const stored = await chrome.storage.local.get(['claudeApiKey', 'chatgptApiKey', 'geminiApiKey', 'preferredProvider']);
 
   let session;
@@ -3655,17 +3647,17 @@ async function checkAndUpdateProvider(provider) {
   else if (provider === 'chatgpt') session = await detectChatGPTSession(stored);
   else session = await detectGeminiSession(stored);
 
-  if (statusEl) {
-    statusEl.textContent = session ? `${session.label} ✓` : 'No session / key';
-    statusEl.style.color = session ? '#2e7d32' : '#c62828';
-  }
+  const KEY_NAMES = { claude: 'claudeApiKey', chatgpt: 'chatgptApiKey', gemini: 'geminiApiKey' };
+  const hasSession = !!(session?.sessionDetected);
+  const hasKey = !!stored[KEY_NAMES[provider]];
+  const sessionText = hasSession ? (session.sessionNeedsTab ? 'found (open tab)' : 'connected') : 'not detected';
+  setProviderDots(provider, hasSession, sessionText, hasKey);
 
   // Update active session respecting preference
   const preferred = stored.preferredProvider || 'auto';
   if (preferred === provider) {
     updateLLMSessionUI(session);
   } else if (preferred === 'auto') {
-    // Re-detect all so auto-priority (claude > chatgpt > gemini) is respected
     const allSessions = await detectAllSessions(stored);
     updateLLMSessionUI(allSessions.claude || allSessions.chatgpt || allSessions.gemini);
   }
@@ -3699,14 +3691,10 @@ const KEY_STORAGE = { claude: 'claudeApiKey', chatgpt: 'chatgptApiKey', gemini: 
     if (!key) return;
     await chrome.storage.local.set({ [KEY_STORAGE[prov]]: key });
     document.getElementById(`settings-${prov}-key`).value = '';
-    const statusEl = document.getElementById(`settings-${prov}-key-status`);
-    if (statusEl) statusEl.textContent = 'API key saved';
     checkAndUpdateProvider(prov);
   });
   document.getElementById(`btn-clear-${prov}-key`)?.addEventListener('click', async () => {
     await chrome.storage.local.remove(KEY_STORAGE[prov]);
-    const statusEl = document.getElementById(`settings-${prov}-key-status`);
-    if (statusEl) statusEl.textContent = '';
     checkAndUpdateProvider(prov);
   });
 });
@@ -3860,8 +3848,8 @@ async function detectClaudeSession(stored = {}) {
       });
       const orgId = results?.[0]?.result?.orgId;
       if (orgId) {
-        const s = { service: 'claude', label: 'Claude.ai (session)', orgId };
-        if (stored.claudeApiKey) { s.apiKey = stored.claudeApiKey; s.label += ' + key'; }
+        const s = { service: 'claude', label: 'Claude.ai (session)', orgId, sessionDetected: true };
+        if (stored.claudeApiKey) { s.apiKey = stored.claudeApiKey; }
         return s;
       }
     }
@@ -3871,13 +3859,13 @@ async function detectClaudeSession(stored = {}) {
   try {
     const cookies = await chrome.cookies.getAll({ domain: 'claude.ai' });
     if (cookies.some(c => c.name === 'sessionKey' || c.name === 'sessionKeyLC')) {
-      const s = { service: 'claude', label: 'Claude.ai (session — open claude.ai tab)', sessionNeedsTab: true };
-      if (stored.claudeApiKey) { s.apiKey = stored.claudeApiKey; s.label += ' + key'; }
+      const s = { service: 'claude', label: 'Claude.ai (session — open claude.ai tab)', sessionNeedsTab: true, sessionDetected: true };
+      if (stored.claudeApiKey) { s.apiKey = stored.claudeApiKey; }
       return s;
     }
   } catch (_) {}
 
-  if (stored.claudeApiKey) return { service: 'claude', label: 'Claude (API key)', apiKey: stored.claudeApiKey };
+  if (stored.claudeApiKey) return { service: 'claude', label: 'Claude (API key)', apiKey: stored.claudeApiKey, sessionDetected: false };
   return null;
 }
 
@@ -3893,13 +3881,13 @@ async function detectChatGPTSession(stored = {}) {
     try {
       const c = await chrome.cookies.get({ url: 'https://chatgpt.com', name });
       if (c?.value) {
-        const s = { service: 'chatgpt', label: 'ChatGPT (session)' };
-        if (stored.chatgptApiKey) { s.apiKey = stored.chatgptApiKey; s.label += ' + key'; }
+        const s = { service: 'chatgpt', label: 'ChatGPT (session)', sessionDetected: true };
+        if (stored.chatgptApiKey) { s.apiKey = stored.chatgptApiKey; }
         return s;
       }
     } catch (_) {}
   }
-  if (stored.chatgptApiKey) return { service: 'chatgpt', label: 'ChatGPT (API key)', apiKey: stored.chatgptApiKey };
+  if (stored.chatgptApiKey) return { service: 'chatgpt', label: 'ChatGPT (API key)', apiKey: stored.chatgptApiKey, sessionDetected: false };
   return null;
 }
 
@@ -3907,12 +3895,12 @@ async function detectGeminiSession(stored = {}) {
   try {
     const c = await chrome.cookies.get({ url: 'https://gemini.google.com', name: 'SAPISID' });
     if (c?.value) {
-      const s = { service: 'gemini', label: 'Gemini (session)', sessionOnly: true };
-      if (stored.geminiApiKey) { s.apiKey = stored.geminiApiKey; s.label += ' + key'; }
+      const s = { service: 'gemini', label: 'Gemini (session)', sessionOnly: true, sessionDetected: true };
+      if (stored.geminiApiKey) { s.apiKey = stored.geminiApiKey; }
       return s;
     }
   } catch (_) {}
-  if (stored.geminiApiKey) return { service: 'gemini', label: 'Gemini (API key)', apiKey: stored.geminiApiKey };
+  if (stored.geminiApiKey) return { service: 'gemini', label: 'Gemini (API key)', apiKey: stored.geminiApiKey, sessionDetected: false };
   return null;
 }
 
@@ -3923,6 +3911,17 @@ async function detectAllSessions(stored = {}) {
     detectGeminiSession(stored),
   ]);
   return { claude, chatgpt, gemini };
+}
+
+function setProviderDots(prov, hasSession, sessionText, hasKey) {
+  const DOT_ON = '#2e7d32';
+  const DOT_OFF = '#bdbdbd';
+  const dot = (id, on) => { const el = document.getElementById(id); if (el) el.style.background = on ? DOT_ON : DOT_OFF; };
+  const lbl = (id, text, on) => { const el = document.getElementById(id); if (el) { el.textContent = text; el.style.color = on ? DOT_ON : '#888'; } };
+  dot(`settings-${prov}-session-dot`, hasSession);
+  lbl(`settings-${prov}-session-label`, `Session: ${sessionText}`, hasSession);
+  dot(`settings-${prov}-key-dot`, hasKey);
+  lbl(`settings-${prov}-key-label`, hasKey ? 'API key: saved' : 'API key: —', hasKey);
 }
 
 async function collectSSE(response) {

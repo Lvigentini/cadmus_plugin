@@ -468,50 +468,74 @@
 
           <!-- Claude (Anthropic) -->
           <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px;margin-bottom:10px">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-              <span style="font-size:12px;font-weight:700;color:#333;min-width:140px">Claude (Anthropic)</span>
-              <span id="settings-claude-status" style="font-size:11px;color:#888;flex:1">—</span>
-              <button class="btn btn--grading-secondary" id="btn-check-claude" style="padding:3px 10px;font-size:11px">Check session</button>
+            <div style="display:flex;align-items:center;margin-bottom:8px">
+              <span style="font-size:12px;font-weight:700;color:#333">Claude (Anthropic)</span>
+              <button class="btn btn--grading-secondary" id="btn-check-claude" style="padding:2px 8px;font-size:11px;margin-left:auto">↻ Refresh</button>
+            </div>
+            <div style="display:flex;gap:20px;margin-bottom:8px">
+              <div style="display:flex;align-items:center;gap:5px">
+                <span id="settings-claude-session-dot" style="width:9px;height:9px;border-radius:50%;background:#bdbdbd;flex-shrink:0;display:inline-block"></span>
+                <span id="settings-claude-session-label" style="font-size:11px;color:#888">Session: —</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:5px">
+                <span id="settings-claude-key-dot" style="width:9px;height:9px;border-radius:50%;background:#bdbdbd;flex-shrink:0;display:inline-block"></span>
+                <span id="settings-claude-key-label" style="font-size:11px;color:#888">API key: —</span>
+              </div>
             </div>
             <div style="display:flex;gap:6px;align-items:center">
-              <input type="password" id="settings-claude-key" placeholder="sk-ant-… (API key fallback)"
+              <input type="password" id="settings-claude-key" placeholder="sk-ant-…"
                 style="flex:1;font-size:11px;padding:4px 8px;border:1px solid #ccc;border-radius:4px">
               <button class="btn btn--grading-secondary" id="btn-save-claude-key" style="padding:3px 10px;font-size:11px">Save</button>
               <button class="btn btn--grading-secondary" id="btn-clear-claude-key" style="padding:3px 10px;font-size:11px;color:#c62828">Clear</button>
             </div>
-            <p id="settings-claude-key-status" style="margin:4px 0 0;font-size:10px;color:#888"></p>
           </div>
 
           <!-- ChatGPT (OpenAI) -->
           <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px;margin-bottom:10px">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-              <span style="font-size:12px;font-weight:700;color:#333;min-width:140px">ChatGPT (OpenAI)</span>
-              <span id="settings-chatgpt-status" style="font-size:11px;color:#888;flex:1">—</span>
-              <button class="btn btn--grading-secondary" id="btn-check-chatgpt" style="padding:3px 10px;font-size:11px">Check session</button>
+            <div style="display:flex;align-items:center;margin-bottom:8px">
+              <span style="font-size:12px;font-weight:700;color:#333">ChatGPT (OpenAI)</span>
+              <button class="btn btn--grading-secondary" id="btn-check-chatgpt" style="padding:2px 8px;font-size:11px;margin-left:auto">↻ Refresh</button>
+            </div>
+            <div style="display:flex;gap:20px;margin-bottom:8px">
+              <div style="display:flex;align-items:center;gap:5px">
+                <span id="settings-chatgpt-session-dot" style="width:9px;height:9px;border-radius:50%;background:#bdbdbd;flex-shrink:0;display:inline-block"></span>
+                <span id="settings-chatgpt-session-label" style="font-size:11px;color:#888">Session: —</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:5px">
+                <span id="settings-chatgpt-key-dot" style="width:9px;height:9px;border-radius:50%;background:#bdbdbd;flex-shrink:0;display:inline-block"></span>
+                <span id="settings-chatgpt-key-label" style="font-size:11px;color:#888">API key: —</span>
+              </div>
             </div>
             <div style="display:flex;gap:6px;align-items:center">
-              <input type="password" id="settings-chatgpt-key" placeholder="sk-proj-… (API key fallback)"
+              <input type="password" id="settings-chatgpt-key" placeholder="sk-proj-…"
                 style="flex:1;font-size:11px;padding:4px 8px;border:1px solid #ccc;border-radius:4px">
               <button class="btn btn--grading-secondary" id="btn-save-chatgpt-key" style="padding:3px 10px;font-size:11px">Save</button>
               <button class="btn btn--grading-secondary" id="btn-clear-chatgpt-key" style="padding:3px 10px;font-size:11px;color:#c62828">Clear</button>
             </div>
-            <p id="settings-chatgpt-key-status" style="margin:4px 0 0;font-size:10px;color:#888"></p>
           </div>
 
           <!-- Gemini (Google) -->
           <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-              <span style="font-size:12px;font-weight:700;color:#333;min-width:140px">Gemini (Google)</span>
-              <span id="settings-gemini-status" style="font-size:11px;color:#888;flex:1">—</span>
-              <button class="btn btn--grading-secondary" id="btn-check-gemini" style="padding:3px 10px;font-size:11px">Check session</button>
+            <div style="display:flex;align-items:center;margin-bottom:8px">
+              <span style="font-size:12px;font-weight:700;color:#333">Gemini (Google)</span>
+              <button class="btn btn--grading-secondary" id="btn-check-gemini" style="padding:2px 8px;font-size:11px;margin-left:auto">↻ Refresh</button>
+            </div>
+            <div style="display:flex;gap:20px;margin-bottom:8px">
+              <div style="display:flex;align-items:center;gap:5px">
+                <span id="settings-gemini-session-dot" style="width:9px;height:9px;border-radius:50%;background:#bdbdbd;flex-shrink:0;display:inline-block"></span>
+                <span id="settings-gemini-session-label" style="font-size:11px;color:#888">Session: —</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:5px">
+                <span id="settings-gemini-key-dot" style="width:9px;height:9px;border-radius:50%;background:#bdbdbd;flex-shrink:0;display:inline-block"></span>
+                <span id="settings-gemini-key-label" style="font-size:11px;color:#888">API key: —</span>
+              </div>
             </div>
             <div style="display:flex;gap:6px;align-items:center">
-              <input type="password" id="settings-gemini-key" placeholder="AIza… (API key fallback)"
+              <input type="password" id="settings-gemini-key" placeholder="AIza…"
                 style="flex:1;font-size:11px;padding:4px 8px;border:1px solid #ccc;border-radius:4px">
               <button class="btn btn--grading-secondary" id="btn-save-gemini-key" style="padding:3px 10px;font-size:11px">Save</button>
               <button class="btn btn--grading-secondary" id="btn-clear-gemini-key" style="padding:3px 10px;font-size:11px;color:#c62828">Clear</button>
             </div>
-            <p id="settings-gemini-key-status" style="margin:4px 0 0;font-size:10px;color:#888"></p>
           </div>
         </div>
       </div>
