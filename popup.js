@@ -3804,25 +3804,16 @@ async function detectLLMSession(stored = {}) {
     }
   } catch (_) {}
 
-  // 2. ChatGPT browser session — use the NextAuth session endpoint (same one used in API calls)
+  // 2. ChatGPT browser session — read cookie jar directly (SameSite=Lax blocks cross-origin fetch)
   try {
-    const r = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' });
-    if (r.ok) {
-      const data = await r.json();
-      if (data?.accessToken) return { service: 'chatgpt', label: 'ChatGPT (session)' };
-    }
+    const cookie = await chrome.cookies.get({ url: 'https://chatgpt.com', name: '__Secure-next-auth.session-token' });
+    if (cookie?.value) return { service: 'chatgpt', label: 'ChatGPT (session)' };
   } catch (_) {}
 
-  // 3. Gemini browser session (presence check)
-  // Logged-in users are served the app on any gemini.google.com path;
-  // unauthenticated requests redirect to accounts.google.com.
+  // 3. Gemini browser session — SAPISID is Google's universal auth cookie
   try {
-    const r = await fetch('https://gemini.google.com/app', { credentials: 'include' });
-    if (r.ok && r.url.startsWith('https://gemini.google.com')) {
-      // Session confirmed — store the fact but mark that a web-session call path is unavailable.
-      // Evaluation will use the API key if one is saved, or surface a clear message otherwise.
-      return { service: 'gemini', label: 'Gemini (session)', sessionOnly: true };
-    }
+    const cookie = await chrome.cookies.get({ url: 'https://gemini.google.com', name: 'SAPISID' });
+    if (cookie?.value) return { service: 'gemini', label: 'Gemini (session)', sessionOnly: true };
   } catch (_) {}
 
   // 4. Claude API key fallback
@@ -3903,45 +3894,98 @@ async function callClaudeWeb(session, systemPrompt, userPrompt) {
 }
 
 async function callChatGPTWeb(systemPrompt, userPrompt) {
-  // Fetch bearer token — conversation endpoint requires Authorization header, not just cookies
-  const sessRes = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' });
-  if (!sessRes.ok) throw new Error(`ChatGPT session: ${sessRes.status}`);
-  const sessData = await sessRes.json();
-  const accessToken = sessData?.accessToken;
-  if (!accessToken) throw new Error('ChatGPT session has no accessToken — try logging in again at chatgpt.com');
+  // SameSite=Lax blocks cross-origin fetch from chrome-extension:// origin, so credentials are
+  // never sent. Run the full evaluation inside an open chatgpt.com tab where all fetches are
+  // same-origin and cookies work normally.
+  const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+  if (!tabs.length) throw new Error('ChatGPT requires an open chatgpt.com tab — open one (logged in) and try again');
 
-  const authHeader = { 'Authorization': `Bearer ${accessToken}` };
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tabs[0].id },
+    func: async (sysPrompt, usrPrompt) => {
+      try {
+        // Bearer token (same-origin — cookies sent normally)
+        const sessRes = await fetch('/api/auth/session');
+        if (!sessRes.ok) return { error: `ChatGPT session: ${sessRes.status}` };
+        const sessData = await sessRes.json();
+        const accessToken = sessData?.accessToken;
+        if (!accessToken) return { error: 'No accessToken — please log into chatgpt.com' };
+        const auth = { 'Authorization': `Bearer ${accessToken}` };
 
-  // Fetch sentinel token — ChatGPT bot-detection requires this before each conversation call
-  const reqRes = await fetch('https://chatgpt.com/backend-api/sentinel/chat-requirements', {
-    method: 'POST', credentials: 'include',
-    headers: { 'content-type': 'application/json', ...authHeader },
-    body: JSON.stringify({ conversation_id: null, messages: [{ author: { role: 'user' }, content: { content_type: 'text', parts: [userPrompt.slice(0, 100)] } }] }),
+        // Sentinel token (bot-detection pre-flight)
+        let sentinelHeaders = {};
+        const sentRes = await fetch('/backend-api/sentinel/chat-requirements', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...auth },
+          body: JSON.stringify({ conversation_id: null, messages: [{ author: { role: 'user' }, content: { content_type: 'text', parts: [usrPrompt.slice(0, 100)] } }] }),
+        });
+        if (sentRes.ok) {
+          const req = await sentRes.json();
+          if (req.turnstile?.required || req.arkose?.required)
+            return { error: 'ChatGPT requires CAPTCHA — add a ChatGPT API key in ⚙ Settings instead' };
+          if (req.token) sentinelHeaders['Openai-Sentinel-Chat-Requirements-Token'] = req.token;
+        }
+
+        // Conversation
+        const convRes = await fetch('/backend-api/conversation', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...auth, ...sentinelHeaders },
+          body: JSON.stringify({
+            action: 'next',
+            messages: [
+              { id: crypto.randomUUID(), author: { role: 'system' }, content: { content_type: 'text', parts: [sysPrompt] } },
+              { id: crypto.randomUUID(), author: { role: 'user' }, content: { content_type: 'text', parts: [usrPrompt] } },
+            ],
+            model: 'gpt-4o-mini',
+            parent_message_id: crypto.randomUUID(),
+            timezone_offset_min: new Date().getTimezoneOffset(),
+            conversation_mode: { kind: 'primary_assistant' },
+          }),
+        });
+        if (!convRes.ok) return { error: `ChatGPT conversation: ${convRes.status}` };
+
+        // Collect SSE — ChatGPT sends the full accumulated text in each event (not deltas)
+        const reader = convRes.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        let conversationId = null;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            const raw = line.slice(6).trim();
+            if (raw === '[DONE]') continue;
+            try {
+              const ev = JSON.parse(raw);
+              const part = ev.message?.content?.parts?.[0];
+              if (typeof part === 'string') fullText = part;
+              if (ev.conversation_id) conversationId = ev.conversation_id;
+            } catch (_) {}
+          }
+        }
+
+        // Hide conversation from history (best-effort cleanup)
+        if (conversationId) {
+          fetch(`/backend-api/conversation/${conversationId}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json', ...auth },
+            body: JSON.stringify({ is_visible: false }),
+          }).catch(() => {});
+        }
+
+        return { text: fullText };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    args: [systemPrompt, userPrompt],
   });
-  if (!reqRes.ok) throw new Error(`ChatGPT requirements: ${reqRes.status}`);
-  const reqData = await reqRes.json();
-  if (reqData.turnstile?.required || reqData.arkose?.required) {
-    throw new Error('ChatGPT requires a CAPTCHA challenge — add a ChatGPT API key in ⚙ Settings instead');
-  }
-  const sentinelHeaders = reqData.token ? { 'Openai-Sentinel-Chat-Requirements-Token': reqData.token } : {};
 
-  const res = await fetch('https://chatgpt.com/backend-api/conversation', {
-    method: 'POST', credentials: 'include',
-    headers: { 'content-type': 'application/json', ...authHeader, ...sentinelHeaders },
-    body: JSON.stringify({
-      action: 'next',
-      messages: [
-        { id: crypto.randomUUID(), author: { role: 'system' }, content: { content_type: 'text', parts: [systemPrompt] } },
-        { id: crypto.randomUUID(), author: { role: 'user' }, content: { content_type: 'text', parts: [userPrompt] } },
-      ],
-      model: 'gpt-4o-mini',
-      parent_message_id: crypto.randomUUID(),
-      timezone_offset_min: new Date().getTimezoneOffset(),
-      conversation_mode: { kind: 'primary_assistant' },
-    }),
-  });
-  if (!res.ok) throw new Error(`ChatGPT request: ${res.status}`);
-  return collectSSE(res);
+  const result = results?.[0]?.result;
+  if (!result) throw new Error('ChatGPT: no result from tab evaluation');
+  if (result.error) throw new Error(result.error);
+  return result.text;
 }
 
 async function callClaudeAPI(apiKey, systemPrompt, userPrompt) {
