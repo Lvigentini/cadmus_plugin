@@ -310,6 +310,8 @@ Audits Fill-in-Blank partial scoring. Load Data reads all student responses from
 
 Supports human-in-the-loop, NLP-assisted, and AI-assisted review of Short Answer responses. Two independent evaluation paths produce complementary evidence — run either or both before exporting.
 
+> **Detailed guide**: column meanings, signal interpretation, sorting strategies, and limitations are documented in [`docs/short-answer-grading-guide.md`](docs/short-answer-grading-guide.md).
+
 - **Model answer mapping table** — lists all SHORT questions in the assessment with their configured expected answers, flagging any missing model answers
 
 - **Evaluate (NLP)** — runs four word-level scoring metrics entirely in the browser. No API calls, no credentials required, instant for any cohort size. Results are written into the page state immediately and appear in the next export:
