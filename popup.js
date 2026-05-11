@@ -1923,8 +1923,11 @@ function cadmusAction(action, options) {
             QuestionPrompt: (qBody.promptText || '').substring(0, 300),
             ExpectedAnswer: (correctVals[0] || '').substring(0, 500),
             StudentAnswer: fo.answer || '',
-            AnswerSimilarity: fo.answerSimilarity ?? '',
+            AnswerSimilarity: fo.answerSimilarity != null ? Math.round(fo.answerSimilarity * 100) : '',
             AutomarkScore: fo.automarkScore ?? 0,
+            // NLP columns — populated by "Evaluate (NLP)", empty until then
+            NLPJaccard: '', NLPCoverage: '', NLPEchoScore: '', NLPLengthRatio: '',
+            QuestionMaxScore: qBody.points ?? 1,
             FieldScore: fo.score ?? 0,
             FieldOutcomeId: fo.id,
           });
@@ -2113,8 +2116,9 @@ function cadmusAction(action, options) {
     const cols = ['StudentName', 'StudentID', 'StudentEmail', 'QuestionNo', 'QuestionID',
       'QuestionPrompt', 'ExpectedAnswer', 'StudentAnswer',
       'AnswerSimilarity', 'AutomarkScore',
+      'NLPJaccard', 'NLPCoverage', 'NLPEchoScore', 'NLPLengthRatio',
       'LLMScore', 'LLMFlag', 'LLMJustification',
-      'FieldScore', 'FieldOutcomeId'];
+      'QuestionMaxScore', 'FieldScore', 'FieldOutcomeId'];
     const esc = v => { const s = String(v ?? '').replace(/"/g, '""'); return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s}"` : s; };
 
     const enriched = rows.map(r => {
@@ -2151,6 +2155,7 @@ const HEADER_MAP = {
 };
 
 let parsedByType = { fib: [], mcq: [], matching: [], short: [] };
+let gradingEvalCancelRequested = false;
 let importFileName = '';
 let pendingExcelRows = null;   // raw rows from XLSX, held until mapping is confirmed
 let pendingExcelHeaders = [];  // raw header names from the spreadsheet
@@ -3365,10 +3370,12 @@ async function extractAssessmentQuestions() {
       if (!assessmentId) return { error: 'Could not extract assessmentId from URL' };
 
       const rootKeys = Object.keys(cache['ROOT_QUERY'] || {});
-      // Prefer INDIVIDUAL, then GROUP, then any task query containing the assessmentId
-      const taskKey = rootKeys.find(k => k.includes('"kind":"INDIVIDUAL"') && k.includes(assessmentId))
-        || rootKeys.find(k => k.includes('"kind":"GROUP"') && k.includes(assessmentId))
-        || rootKeys.find(k => k.includes(assessmentId) && (k.startsWith('task(') || k.startsWith('taskByAssessment(')));
+      // Match only task(...) keys — other queries (instructionSheet, markerRubric) also embed
+      // kind:"INDIVIDUAL" + the assessmentId in their key string and would otherwise be picked up first.
+      const isTaskKey = k => (k.startsWith('task(') || k.startsWith('taskByAssessment(')) && k.includes(assessmentId);
+      const taskKey = rootKeys.find(k => isTaskKey(k) && k.includes('"kind":"INDIVIDUAL"'))
+        || rootKeys.find(k => isTaskKey(k) && k.includes('"kind":"GROUP"'))
+        || rootKeys.find(isTaskKey);
       if (!taskKey) return { error: 'No task found in cache for this assessment — ensure the page is fully loaded' };
 
       const taskRef = cache['ROOT_QUERY'][taskKey]?.__ref;
@@ -4054,9 +4061,17 @@ async function callChatGPTAPI(apiKey, systemPrompt, userPrompt) {
   return data.choices?.[0]?.message?.content || '';
 }
 
+// gemini-2.0-flash free tier: 15 RPM, 1 500 RPD.
+// The evaluation loop enforces a 5 s minimum between call starts (= 12 RPM target),
+// so under normal conditions no 429 should occur. This retry handler is a safety net
+// for transient bursts; it reads the exact wait time from the error body rather than
+// guessing, so it never under-waits or over-waits.
+const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
 async function callGeminiAPI(apiKey, systemPrompt, userPrompt, maxAttempts = 5) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=' + apiKey, {
+    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -4068,9 +4083,8 @@ async function callGeminiAPI(apiKey, systemPrompt, userPrompt, maxAttempts = 5) 
 
     if (res.status === 429 || data.error?.status === 'RESOURCE_EXHAUSTED') {
       if (attempt === maxAttempts) throw new Error(data.error?.message || 'Gemini quota exceeded — retry later');
-      // Parse the suggested retry delay from the error message ("Please retry in 47.98s.")
       const delayMatch = (data.error?.message || '').match(/retry in ([\d.]+)s/i);
-      const waitMs = delayMatch ? Math.ceil(parseFloat(delayMatch[1]) * 1000) + 500 : attempt * 12000;
+      const waitMs = delayMatch ? Math.ceil(parseFloat(delayMatch[1]) * 1000) + 500 : attempt * 15000;
       log(`Gemini rate limit — waiting ${Math.round(waitMs / 1000)}s… (attempt ${attempt}/${maxAttempts})`, 'warn');
       await new Promise(r => setTimeout(r, waitMs));
       continue;
@@ -4188,9 +4202,14 @@ document.addEventListener('click', (e) => {
               (missing > 0 ? ` | <span style="color:#d32f2f">${missing} missing model answer(s)</span>` : ' | all model answers available');
             shortSummary.style.display = 'block';
           }
-          // Enable AI evaluation button now that data is loaded
+          // Enable evaluation buttons now that data is loaded
           const evalBtn = document.getElementById('btn-evaluate-short');
           if (evalBtn) evalBtn.disabled = false;
+          const nlpBtn = document.getElementById('btn-evaluate-nlp');
+          if (nlpBtn) nlpBtn.disabled = false;
+          // Reset export button label (in case a previous evaluation run had updated it)
+          const exportShortBtn = document.getElementById('btn-export-short-csv');
+          if (exportShortBtn) exportShortBtn.textContent = 'Export SHORT answers';
         }
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
       })();
@@ -4253,20 +4272,11 @@ document.addEventListener('click', (e) => {
         document.querySelectorAll('.btn').forEach(b => b.disabled = false);
       })();
       return;
-    case 'gradingEvaluateShort':
+    case 'gradingEvaluateNLP':
       (async () => {
         document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+        log('Running NLP evaluation (no API — instant)…');
 
-        // 1. Get detected LLM session
-        const session = window.__llmSession;
-        if (!session) {
-          logError('No LLM session detected — log in to Claude.ai, ChatGPT, or Gemini in this browser first.');
-          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
-          return;
-        }
-        log(`Using ${session.label} session…`);
-
-        // 2. Read shortRows + full question data from page context
         const [read] = await chrome.scripting.executeScript({
           target: { tabId: cadmusTabId }, world: 'MAIN',
           func: () => {
@@ -4280,6 +4290,7 @@ document.addEventListener('click', (e) => {
             return { shortRows: state.shortRows, questions };
           },
         });
+
         if (!read?.result) {
           logError('No SHORT data — run Load Data first.');
           document.querySelectorAll('.btn').forEach(b => b.disabled = false);
@@ -4288,38 +4299,174 @@ document.addEventListener('click', (e) => {
 
         const { shortRows, questions } = read.result;
 
-        // 3. Group rows by questionId for batched evaluation
-        const byQuestion = {};
-        shortRows.forEach((r, idx) => {
-          if (!byQuestion[r.QuestionID]) byQuestion[r.QuestionID] = [];
-          byQuestion[r.QuestionID].push({ idx, answer: r.StudentAnswer, outcomeId: r.FieldOutcomeId });
+        // Tokenise: lowercase, strip punctuation, drop stopwords shorter than 3 chars
+        const tokenize = s => new Set(
+          (s || '').toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2)
+        );
+
+        const nlpResults = {};
+        for (const r of shortRows) {
+          const q = questions[r.QuestionID] || {};
+          const sTokens = tokenize(r.StudentAnswer);
+          const mTokens = tokenize(q.modelAnswer);
+          const qTokens = tokenize(q.prompt);
+
+          // Jaccard: intersection(student, model) / union(student, model)
+          const smIntersect = [...mTokens].filter(t => sTokens.has(t)).length;
+          const smUnion = new Set([...mTokens, ...sTokens]).size;
+          const jaccard = smUnion > 0 ? Math.round(smIntersect / smUnion * 100) : 0;
+
+          // Coverage: what % of model answer words appear in student answer
+          const coverage = mTokens.size > 0 ? Math.round(smIntersect / mTokens.size * 100) : 0;
+
+          // Echo: what % of the student's words come directly from the question stem
+          const sqIntersect = [...qTokens].filter(t => sTokens.has(t)).length;
+          const echoScore = sTokens.size > 0 ? Math.round(sqIntersect / sTokens.size * 100) : 0;
+
+          // Length ratio: student / model answer character length, capped at 2
+          const modelLen = (q.modelAnswer || '').length;
+          const studentLen = (r.StudentAnswer || '').length;
+          const lengthRatio = modelLen > 0 ? parseFloat(Math.min(studentLen / modelLen, 2).toFixed(2)) : 0;
+
+          nlpResults[r.FieldOutcomeId] = { NLPJaccard: jaccard, NLPCoverage: coverage, NLPEchoScore: echoScore, NLPLengthRatio: lengthRatio };
+        }
+
+        await chrome.scripting.executeScript({
+          target: { tabId: cadmusTabId }, world: 'MAIN',
+          func: (nr) => {
+            (window.__gradingState?.shortRows || []).forEach(r => {
+              const res = nr[r.FieldOutcomeId];
+              if (res) Object.assign(r, res);
+            });
+          },
+          args: [nlpResults],
         });
 
-        const qCount = Object.keys(byQuestion).length;
-        log(`Evaluating ${shortRows.length} responses across ${qCount} question${qCount > 1 ? 's' : ''} (sequential — respects rate limits)…`);
+        log(`NLP evaluation complete — ${Object.keys(nlpResults).length} responses scored`, 'ok');
+        const exportBtn = document.getElementById('btn-export-short-csv');
+        if (exportBtn && exportBtn.textContent === 'Export SHORT answers') {
+          exportBtn.textContent = 'Export SHORT answers — with NLP scores';
+        }
+        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+      })();
+      return;
+
+    case 'gradingStopEval':
+      gradingEvalCancelRequested = true;
+      log('Stopping after current question — results so far are preserved…', 'warn');
+      return;
+
+    case 'gradingEvaluateShort':
+      (async () => {
+        gradingEvalCancelRequested = false;
+
+        // Disable all buttons except the eval button, which becomes a Stop button
+        document.querySelectorAll('.btn:not(#btn-evaluate-short)').forEach(b => b.disabled = true);
+        const evalBtn = document.getElementById('btn-evaluate-short');
+        if (evalBtn) { evalBtn.textContent = 'Stop evaluation'; evalBtn.dataset.action = 'gradingStopEval'; }
+
+        const restoreEvalBtn = () => {
+          if (evalBtn) { evalBtn.textContent = 'Evaluate with AI'; evalBtn.dataset.action = 'gradingEvaluateShort'; }
+          document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+        };
+
+        // 1. Get detected LLM session
+        const session = window.__llmSession;
+        if (!session) {
+          logError('No LLM session detected — log in to Claude.ai, ChatGPT, or Gemini in this browser first.');
+          restoreEvalBtn();
+          return;
+        }
+        log(`Using ${session.label} session…`);
+
+        // 2. Read shortRows + full question data from page context (includes any prior LLM results)
+        const [read] = await chrome.scripting.executeScript({
+          target: { tabId: cadmusTabId }, world: 'MAIN',
+          func: () => {
+            const state = window.__gradingState;
+            if (!state?.shortRows?.length) return null;
+            const questions = {};
+            Object.entries(state.questionBodies || {}).forEach(([id, qb]) => {
+              if (qb.questionType !== 'SHORT') return;
+              questions[id] = { prompt: qb.promptText || '', modelAnswer: qb.fields[0]?.correctValues?.[0] || '', maxScore: qb.points ?? 1 };
+            });
+            return { shortRows: state.shortRows, questions };
+          },
+        });
+        if (!read?.result) {
+          logError('No SHORT data — run Load Data first.');
+          restoreEvalBtn();
+          return;
+        }
+
+        const { shortRows, questions } = read.result;
+
+        // 3. Group rows by questionId; flag entries that already have a result so we can skip them
+        const byQuestion = {};
+        shortRows.forEach((r) => {
+          if (!byQuestion[r.QuestionID]) byQuestion[r.QuestionID] = [];
+          byQuestion[r.QuestionID].push({
+            answer: r.StudentAnswer,
+            outcomeId: r.FieldOutcomeId,
+            done: r.LLMScore !== '' && r.LLMScore !== undefined && r.LLMScore !== null,
+          });
+        });
+
+        const qAll = Object.keys(byQuestion).length;
+        const qPending = Object.entries(byQuestion).filter(([, es]) => !es.every(e => e.done)).length;
+        const qSkipped = qAll - qPending;
+        if (qSkipped > 0) log(`Resuming — skipping ${qSkipped} already-evaluated question${qSkipped > 1 ? 's' : ''}, ${qPending} remaining…`, 'ok');
+        else log(`Evaluating ${shortRows.length} responses across ${qAll} question${qAll > 1 ? 's' : ''} (sequential — respects rate limits)…`);
 
         const SYSTEM = 'You are an academic assessor evaluating student short-answer responses. Be rigorous: a student who merely paraphrases or echoes the question without adding substantive knowledge scores low. Always provide a one-sentence justification.';
 
-        // 4. One API call per question, sequential to stay within rate limits
-        const results = {};
+        // 4. One API call per question, sequential. gemini-2.0-flash free tier: 15 RPM, 1 500 RPD.
+        // 5 s between call starts = 12 RPM target — 20% headroom under the documented limit.
+        // Tracked from call start so slow responses (including retry waits) don't add extra delay.
+        const GEMINI_MIN_INTERVAL_MS = 5000;
+        let geminiLastCallStart = 0;
+
         let qIdx = 0;
+        let evaluatedCount = 0;
         for (const [qid, entries] of Object.entries(byQuestion)) {
+          if (gradingEvalCancelRequested) break;
+
+          // Skip questions where every student response already has a result
+          if (entries.every(e => e.done)) continue;
+
           qIdx++;
-          log(`Evaluating question ${qIdx}/${qCount} (${entries.length} responses)…`);
+
+          if (session.service === 'gemini') {
+            const sinceLastStart = Date.now() - geminiLastCallStart;
+            const gap = GEMINI_MIN_INTERVAL_MS - sinceLastStart;
+            if (gap > 0) {
+              log(`Gemini pacing — waiting ${(gap / 1000).toFixed(1)}s…`);
+              await new Promise(r => setTimeout(r, gap));
+            }
+            if (gradingEvalCancelRequested) break;
+            geminiLastCallStart = Date.now();
+          }
+
+          log(`Evaluating question ${qIdx}/${qPending} (${entries.length} responses)…`);
           const q = questions[qid] || {};
+          const maxScore = q.maxScore ?? 1;
+          const step = maxScore / 4;
+          const validScores = [0, 1, 2, 3, 4].map(n => parseFloat((n * step).toFixed(4))).join(', ');
           const numberedAnswers = entries.map((e, i) => `${i + 1}. ${e.answer || '(no answer)'}`).join('\n');
           const userPrompt = [
             `QUESTION: ${q.prompt}`,
             `MODEL ANSWER: ${q.modelAnswer}`,
+            `MAX SCORE: ${maxScore} points`,
             '',
             'Evaluate each student response below.',
-            'Score: 0 (no credit), 0.5 (partial credit), 1 (full credit).',
-            'Flag: GENUINE (demonstrates understanding beyond question wording), ECHO (restates question without adding substance), PARTIAL (some substance but incomplete), EMPTY (blank or off-topic).',
+            `Score: return the actual point value using quarter-point steps. Valid values: ${validScores}.`,
+            `Flag: CORRECT (score ${parseFloat((step * 3).toFixed(4))}–${maxScore}), PARTIAL (score ${parseFloat((step).toFixed(4))}–${parseFloat((step * 2).toFixed(4))}), INCORRECT (score 0, wrong or off-topic), ECHO (score 0, restates question without substance), SKIP (score 0, blank or too short).`,
             'Respond ONLY with a JSON array — one object per student in order — each with keys: score, flag, justification.',
             '',
             `STUDENT RESPONSES:\n${numberedAnswers}`,
           ].join('\n');
 
+          const qResults = {};
           try {
             const text = await callLLMEvaluate(session, SYSTEM, userPrompt);
             const match = text.match(/\[[\s\S]*\]/);
@@ -4327,42 +4474,50 @@ document.addEventListener('click', (e) => {
             const parsed = JSON.parse(match[0]);
             entries.forEach((e, i) => {
               const r = parsed[i] || {};
-              results[e.outcomeId] = {
+              qResults[e.outcomeId] = {
                 LLMScore: r.score ?? '',
                 LLMFlag: (r.flag || 'ERROR').toUpperCase(),
                 LLMJustification: r.justification || '',
               };
             });
+            evaluatedCount += entries.length;
             log(`Question ${qid.substring(0, 8)}…: ${entries.length} responses evaluated`, 'ok');
           } catch (err) {
             entries.forEach(e => {
-              results[e.outcomeId] = { LLMScore: '', LLMFlag: 'ERROR', LLMJustification: err.message };
+              qResults[e.outcomeId] = { LLMScore: '', LLMFlag: 'ERROR', LLMJustification: err.message };
             });
             log(`Question ${qid.substring(0, 8)}… failed: ${err.message}`, 'err');
           }
+
+          // Write this question's results back immediately so they survive a stop
+          await chrome.scripting.executeScript({
+            target: { tabId: cadmusTabId }, world: 'MAIN',
+            func: (qr) => {
+              (window.__gradingState?.shortRows || []).forEach(r => {
+                const res = qr[r.FieldOutcomeId];
+                if (res) Object.assign(r, res);
+              });
+            },
+            args: [qResults],
+          });
         }
 
-        // 5. Write results back into page context shortRows keyed by FieldOutcomeId
-        await chrome.scripting.executeScript({
-          target: { tabId: cadmusTabId }, world: 'MAIN',
-          func: (results) => {
-            (window.__gradingState?.shortRows || []).forEach(r => {
-              const res = results[r.FieldOutcomeId];
-              if (res) Object.assign(r, res);
-            });
-          },
-          args: [results],
-        });
+        const cancelled = gradingEvalCancelRequested;
+        gradingEvalCancelRequested = false;
 
-        const echoCount = Object.values(results).filter(r => r.LLMFlag === 'ECHO').length;
-        const errorCount = Object.values(results).filter(r => r.LLMFlag === 'ERROR').length;
-        log(
-          `Evaluation complete — ${Object.keys(results).length} responses` +
-          (echoCount ? `, ${echoCount} flagged ECHO` : '') +
-          (errorCount ? `, ${errorCount} errors` : ''),
-          echoCount > 0 ? 'warn' : 'ok'
-        );
-        document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+        if (cancelled) {
+          log(`Evaluation paused — ${evaluatedCount} responses evaluated so far. Click "Evaluate with AI" to continue from where it stopped.`, 'warn');
+        } else {
+          log(`Evaluation complete — ${evaluatedCount} responses evaluated`, 'ok');
+        }
+        const exportBtn2 = document.getElementById('btn-export-short-csv');
+        if (exportBtn2) {
+          const hasNLP = exportBtn2.textContent.includes('NLP');
+          exportBtn2.textContent = hasNLP
+            ? 'Export SHORT answers — with NLP + AI results'
+            : 'Export SHORT answers — with AI results';
+        }
+        restoreEvalBtn();
       })();
       return;
     case 'chartDistribution':
@@ -4751,6 +4906,125 @@ document.getElementById('grading-upload-answers')?.addEventListener('change', (e
   } else {
     reader.readAsArrayBuffer(file);
   }
+});
+
+// ── Restore previous LLM results from a prior SHORT CSV export ────────────────
+document.getElementById('grading-upload-llm-results')?.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const readText = () => new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = ev => res(ev.target.result);
+    r.onerror = rej;
+    r.readAsText(file);
+  });
+
+  // RFC 4180-compliant CSV parser — handles quoted fields containing commas and newlines
+  function parseCSV(text) {
+    const rows = [];
+    let col = '', row = [], inQ = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i], next = text[i + 1];
+      if (inQ) {
+        if (ch === '"' && next === '"') { col += '"'; i++; }        // escaped quote
+        else if (ch === '"') { inQ = false; }                       // end of quoted field
+        else { col += ch; }
+      } else {
+        if (ch === '"') { inQ = true; }
+        else if (ch === ',') { row.push(col); col = ''; }
+        else if (ch === '\n' || (ch === '\r' && next === '\n')) {
+          row.push(col); col = '';
+          if (row.some(c => c !== '')) rows.push(row);              // skip blank lines
+          row = [];
+          if (ch === '\r') i++;                                      // skip \n of \r\n
+        } else { col += ch; }
+      }
+    }
+    if (col || row.length) { row.push(col); if (row.some(c => c !== '')) rows.push(row); }
+    if (rows.length < 2) return { headers: [], data: [] };
+    const headers = rows[0].map(h => h.trim());
+    const data = rows.slice(1).map(r => {
+      const obj = {};
+      headers.forEach((h, i) => { obj[h] = (r[i] ?? '').trim(); });
+      return obj;
+    });
+    return { headers, data };
+  }
+
+  try {
+    const text = await readText();
+    const { headers, data } = parseCSV(text);
+    if (!data.length) throw new Error('File appears empty');
+
+    // Validate: must be a SHORT answers export with LLM columns
+    if (!headers.includes('FieldOutcomeId')) throw new Error('CSV is missing FieldOutcomeId column — is this a SHORT answers export?');
+    if (!headers.includes('LLMScore')) throw new Error('CSV has no LLMScore column — has this file been through AI evaluation?');
+
+    // Build map: outcomeId → { LLMScore, LLMFlag, LLMJustification }
+    // Skip rows with no ID, no score, and skip ERROR rows (let them be re-evaluated)
+    const resultMap = {};
+    let skippedNoId = 0, skippedNoResult = 0;
+    for (const row of data) {
+      const id = String(row['FieldOutcomeId'] || '').trim();
+      if (!id) { skippedNoId++; continue; }
+      const score = row['LLMScore'];
+      const flag  = row['LLMFlag'] || '';
+      // Skip unevaluated rows (no score, no flag) and ERROR rows
+      if (score === '' || flag === '' || flag === 'ERROR') { skippedNoResult++; continue; }
+      resultMap[id] = {
+        LLMScore: Number(score),
+        LLMFlag: flag,
+        LLMJustification: row['LLMJustification'] || '',
+      };
+    }
+
+    const restoreCount = Object.keys(resultMap).length;
+    if (restoreCount === 0) throw new Error(
+      `No evaluated results found in file (${skippedNoResult} unevaluated/error rows, ${skippedNoId} missing IDs)`
+    );
+
+    // Write into page context shortRows keyed by FieldOutcomeId.
+    // Returns: { written, total } — 'total' === -1 means Load Data hasn't been run yet.
+    const [writeResult] = await chrome.scripting.executeScript({
+      target: { tabId: cadmusTabId }, world: 'MAIN',
+      func: (rm) => {
+        const rows = window.__gradingState?.shortRows;
+        if (!rows?.length) return { written: 0, total: -1 };
+        let written = 0;
+        rows.forEach(r => {
+          const res = rm[String(r.FieldOutcomeId)];
+          if (res) { Object.assign(r, res); written++; }
+        });
+        return { written, total: rows.length };
+      },
+      args: [resultMap],
+    });
+
+    const { written = 0, total = -1 } = writeResult?.result ?? {};
+
+    if (total === -1) {
+      log('Restore failed: Load Data hasn\'t been run yet — click "Load Data" on the Grading tab first, then upload this file again.', 'err');
+    } else {
+      const unmatched = restoreCount - written;
+      log(
+        `Restored ${written} result${written !== 1 ? 's' : ''} from ${file.name}` +
+        (skippedNoResult > 0 ? ` — ${skippedNoResult} unevaluated/error rows skipped (will be re-evaluated)` : '') +
+        (skippedNoId > 0 ? `, ${skippedNoId} rows had no ID` : '') +
+        (unmatched > 0 ? ` — ${unmatched} IDs not found in current data (different assessment?)` : ''),
+        written > 0 ? 'ok' : 'err'
+      );
+      if (written > 0) {
+        const exportBtn = document.getElementById('btn-export-short-csv');
+        if (exportBtn) exportBtn.textContent = 'Export SHORT answers — with results';
+      }
+    }
+  } catch (err) {
+    log(`Restore failed: ${err.message}`, 'err');
+  }
+
+  // Reset the input so the same file can be re-uploaded if needed
+  e.target.value = '';
 });
 
 // ── Grade scraping + chart rendering ─────────────────────────────────────────
