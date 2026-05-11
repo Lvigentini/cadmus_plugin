@@ -420,8 +420,16 @@
               <input type="file" id="grading-upload-answers" accept=".xlsx,.xls,.csv">
             </label>
 
-            <div style="display:flex;gap:8px;margin-top:8px">
-              <button class="btn btn--grading-secondary" data-action="gradingExportShortCsv" style="flex:1">Export SHORT CSV</button>
+            <!-- Restore previous AI results -->
+            <label class="file-label file-label--small" style="margin:4px 0 8px">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#546e7a" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
+              <span>Restore previous AI results (.csv) — resume from a prior export</span>
+              <input type="file" id="grading-upload-llm-results" accept=".csv">
+            </label>
+
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <button class="btn btn--grading-secondary" data-action="gradingExportShortCsv" id="btn-export-short-csv" style="flex:1.2">Export SHORT answers</button>
+              <button class="btn btn--grading-secondary" data-action="gradingEvaluateNLP" id="btn-evaluate-nlp" style="flex:1" disabled>Evaluate (NLP)</button>
               <button class="btn btn--grading-secondary" data-action="gradingEvaluateShort" id="btn-evaluate-short" style="flex:1" disabled>Evaluate with AI</button>
             </div>
           </div>
